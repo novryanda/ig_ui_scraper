@@ -10,7 +10,10 @@ import type {
   FollowingVerifiedResult,
 } from '@/types'
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const BASE =
+  typeof window === 'undefined'
+    ? process.env.INTERNAL_API_URL || 'http://backend:8000'   // server-side (dalam Docker)
+    : process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000' // browser (user)
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
   const res = await fetch(`${BASE}${path}`, {

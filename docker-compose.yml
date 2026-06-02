@@ -10,7 +10,6 @@ services:
     env_file:
       - ./backend/.env
     volumes:
-      # Persist data & session login Instagram (jangan ilang pas container restart)
       - ./backend/data:/app/data
       - ./backend/session:/app/session
     restart: unless-stopped
@@ -27,7 +26,10 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      # Untuk browser user (akses dari luar Docker)
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      # Untuk server-side Next.js (akses antar container)
+      - INTERNAL_API_URL=http://backend:8000
     depends_on:
       - backend
     restart: unless-stopped
