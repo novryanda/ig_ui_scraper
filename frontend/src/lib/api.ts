@@ -15,6 +15,8 @@ import type {
   LikersResult,
   ScrapeLikersRequest,
   ScrapeUnifiedRequest,
+  ScrapePostRequest,
+  ActiveCommenter,
 } from '@/types'
 
 const BASE =
@@ -46,11 +48,19 @@ export const saveCookies   = (cookies_json: string) =>
   apiFetch('/api/auth/cookies', { method: 'POST', body: JSON.stringify({ cookies_json }) })
 
 // ── Scrape Post ─────────────────────────────────────────────────
+
 export interface ScrapePostOptions {
   include_replies?: boolean
   max_replies_per_comment?: number
 }
 
+/**
+ * Scrape komentar satu post Instagram.
+ *
+ * @param url           - URL post/reel Instagram
+ * @param max_comments  - Jumlah komentar. **0 = unlimited** (ambil semua hingga batas aman server).
+ * @param opts          - Opsi tambahan: include_replies, max_replies_per_comment
+ */
 export const scrapePost = (
   url: string,
   max_comments = 100,
@@ -60,12 +70,20 @@ export const scrapePost = (
     method: 'POST',
     body: JSON.stringify({
       url,
-      max_comments,
+      max_comments,           // 0 = unlimited — diteruskan langsung ke backend
       include_replies: opts.include_replies ?? true,
       max_replies_per_comment: opts.max_replies_per_comment ?? 20,
-    }),
+    } satisfies ScrapePostRequest),
   })
 
+/**
+ * Scrape komentar beberapa post sekaligus (batch).
+ *
+ * @param urls          - Array URL post Instagram
+ * @param max_comments  - 0 = unlimited per post
+ * @param delay_between - Jeda antar post (detik)
+ * @param opts          - Opsi replies
+ */
 export const scrapePosts = (
   urls: string[],
   max_comments = 100,
@@ -83,6 +101,10 @@ export const scrapePosts = (
     }),
   })
 
+/**
+ * Unified scrape: komentar + likers dalam satu sesi browser.
+ * max_comments=0 dalam req → unlimited.
+ */
 export const scrapeUnified = (req: ScrapeUnifiedRequest) =>
   apiFetch<PostResult | UnifiedResult>('/api/scrape/post/unified', {
     method: 'POST',
@@ -170,6 +192,23 @@ export async function downloadLikersInline(
   if (!res.ok) throw new Error(`Download gagal: HTTP ${res.status}`)
   const blob = await res.blob()
   _triggerDownload(blob, `${filenameHint}_likers.csv`)
+}
+
+/**
+ * Download CSV komentator teraktif langsung dari data di client.
+ */
+export async function downloadActiveCommentersInline(
+  active_commenters: ActiveCommenter[],
+  filenameHint = 'active_commenters',
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/download/active-commenters-csv`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active_commenters, filename_hint: filenameHint }),
+  })
+  if (!res.ok) throw new Error(`Download gagal: HTTP ${res.status}`)
+  const blob = await res.blob()
+  _triggerDownload(blob, `${filenameHint}_active_commenters.csv`)
 }
 
 /** Helper: trigger browser download dari Blob */
@@ -289,3 +328,82 @@ export const getProfilePostsFiles = (username: string) =>
   apiFetch<{ username: string; files: Array<{ name: string; size: number; modified: string }>; count: number }>(
     `/api/profiles/${username}/posts`
   )
+
+
+
+
+  // ════════════════════════════════════════════════════════════════
+// CHECKPOINT SESSION API
+// → TEMPEL di akhir file frontend/src/lib/api.ts
+//   Memakai `BASE` & `apiFetch` yang sudah ada di api.ts.
+// ════════════════════════════════════════════════════════════════
+
+import type {
+  CheckpointSession,
+  CheckpointSessionSummary,
+  StartCheckpointRequest,
+} from '@/types'
+
+/**
+ * Mulai sesi checkpoint baru — langsung mengambil batch pertama
+ * (sekaligus metadata postingan).
+ */
+export const startCheckpointSession = (req: StartCheckpointRequest) =>
+  apiFetch<CheckpointSession>('/api/scrape/session/start', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+
+/**
+ * Lanjut scrape satu batch berikutnya dari cursor terakhir.
+ */
+export const continueCheckpointSession = (session_id: string) =>
+  apiFetch<CheckpointSession>('/api/scrape/session/continue', {
+    method: 'POST',
+    body: JSON.stringify({ session_id }),
+  })
+
+/**
+ * Ambil detail sesi (komentar gabungan + summary terkini).
+ */
+export const getCheckpointSession = (session_id: string) =>
+  apiFetch<CheckpointSession>(`/api/scrape/session/${encodeURIComponent(session_id)}`)
+
+/**
+ * Tandai sesi selesai + simpan file JSON gabungan di server.
+ */
+export const finalizeCheckpointSession = (session_id: string) =>
+  apiFetch<CheckpointSession>(
+    `/api/scrape/session/${encodeURIComponent(session_id)}/finalize`,
+    { method: 'POST', body: '{}' },
+  )
+
+/**
+ * Daftar semua sesi checkpoint (ringkasan).
+ */
+export const listCheckpointSessions = () =>
+  apiFetch<{ sessions: CheckpointSessionSummary[]; count: number }>(
+    '/api/scrape/session/list',
+  )
+
+/**
+ * Hapus sesi.
+ */
+export const deleteCheckpointSession = (session_id: string) =>
+  apiFetch<{ deleted: boolean; session_id: string }>(
+    `/api/scrape/session/${encodeURIComponent(session_id)}`,
+    { method: 'DELETE' },
+  )
+
+/**
+ * URL unduh JSON gabungan sesi (semua batch jadi satu file).
+ */
+export const downloadCheckpointJson = (session_id: string) =>
+  `${BASE}/api/scrape/session/${encodeURIComponent(session_id)}/download`
+
+/**
+ * URL unduh CSV komentar gabungan sesi.
+ * @param replies true = sertakan balasan (default)
+ */
+export const downloadCheckpointCommentsCsv = (session_id: string, replies = true) =>
+  `${BASE}/api/scrape/session/${encodeURIComponent(session_id)}/comments.csv?replies=${replies}`

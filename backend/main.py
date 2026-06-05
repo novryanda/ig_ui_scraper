@@ -1,6 +1,6 @@
 """
 main.py — FastAPI Backend untuk Instagram Scraper
-Versi: V16.3 + Unified Scrape + Aggressive Likers + Replies + Download JSON/CSV
+Versi: V16.4 + Unlimited Comments (max_comments=0) + Unified + Aggressive Likers
 """
 import os
 import re
@@ -18,7 +18,8 @@ from typing import Optional, List, Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from checkpoint_session_api import router as checkpoint_router
 
 # ── PATH SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +30,7 @@ sys.path.insert(0, ENGINE_DIR)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── APP ──────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Instagram Scraper API", version="2.0.0")
+app = FastAPI(title="Instagram Scraper API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +40,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(checkpoint_router)
+
+# Batas aman default — bisa di-override via env
+SAFE_MAX_COMMENTS = int(os.getenv("SAFE_MAX_COMMENTS", 2000))
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # MODELS
@@ -46,9 +52,17 @@ app.add_middleware(
 
 class ScrapePostRequest(BaseModel):
     url: str
-    max_comments: int = 100
+    max_comments: int = 100        # 0 = unlimited (ambil semua)
     include_replies: bool = True
     max_replies_per_comment: int = 20
+
+    @field_validator("max_comments")
+    @classmethod
+    def validate_max_comments(cls, v: int) -> int:
+        # Izinkan 0 (unlimited) dan positif; tolak negatif
+        if v < 0:
+            raise ValueError("max_comments tidak boleh negatif. Gunakan 0 untuk unlimited.")
+        return v
 
 class ScrapePostsRequest(BaseModel):
     urls: List[str]
@@ -57,10 +71,17 @@ class ScrapePostsRequest(BaseModel):
     include_replies: bool = True
     max_replies_per_comment: int = 20
 
+    @field_validator("max_comments")
+    @classmethod
+    def validate_max_comments(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_comments tidak boleh negatif.")
+        return v
+
 class ScrapePostLikersRequest(BaseModel):
     url: str
-    max_likers: int = 0                    # 0 = ambil semua
-    aggressive_likers: bool = False        # True = jeda lebih pendek, push 1000+
+    max_likers: int = 0
+    aggressive_likers: bool = False
     checkpoint_size: int = 200
     checkpoint_delay_min: int = 8
     checkpoint_delay_max: int = 15
@@ -69,7 +90,7 @@ class ScrapePostLikersRequest(BaseModel):
 
 class ScrapeUnifiedRequest(BaseModel):
     url: str
-    # Comments
+    # Comments — 0 = unlimited
     max_comments: int = 100
     include_replies: bool = True
     max_replies_per_comment: int = 20
@@ -82,6 +103,13 @@ class ScrapeUnifiedRequest(BaseModel):
     checkpoint_delay_max: int = 15
     page_delay_min: float = 1.5
     page_delay_max: float = 3.0
+
+    @field_validator("max_comments")
+    @classmethod
+    def validate_max_comments(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_comments tidak boleh negatif. Gunakan 0 untuk unlimited.")
+        return v
 
 class ScrapeProfileRequest(BaseModel):
     username: str
@@ -119,6 +147,10 @@ class DownloadCommentsInlineRequest(BaseModel):
 class DownloadLikersInlineRequest(BaseModel):
     likers: List[Any] = []
     filename_hint: str = "likers"
+
+class DownloadActiveCommentersInlineRequest(BaseModel):
+    active_commenters: List[Any] = []
+    filename_hint: str = "active_commenters"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -170,6 +202,31 @@ def save_json_output(data: dict, filename: str) -> str:
     with open(fp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
     return safe_name
+
+
+def _estimate_timeout(max_comments: int, include_replies: bool, scrape_likers: bool = False) -> int:
+    """
+    Estimasi timeout subprocess berdasarkan jumlah komentar yang diminta.
+    max_comments=0 → unlimited, pakai timeout maksimum.
+    """
+    if max_comments == 0:
+        # Unlimited mode: bisa sampai berjam-jam
+        base = 7200
+    elif max_comments <= 200:
+        base = 600
+    elif max_comments <= 500:
+        base = 1200
+    elif max_comments <= 1000:
+        base = 2400
+    else:
+        base = 3600
+
+    if include_replies:
+        base = int(base * 1.5)
+    if scrape_likers:
+        base += 3600
+
+    return base
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -231,6 +288,9 @@ def run_post_scraper(
     include_replies: bool = True,
     max_replies_per_comment: int = 20,
 ) -> dict:
+    """
+    max_comments=0 → scraper akan ambil semua komentar (unlimited mode).
+    """
     script = f"""
 import sys
 sys.path.insert(0, r'{ENGINE_DIR}')
@@ -247,7 +307,8 @@ with InstagramScraperV16() as scraper:
     print("___RESULT_START___")
     print(json.dumps(result, ensure_ascii=False, default=str))
 """
-    return _run_subprocess(script, timeout=600)
+    timeout = _estimate_timeout(max_comments, include_replies)
+    return _run_subprocess(script, timeout=timeout)
 
 
 def run_unified_scraper(
@@ -264,6 +325,9 @@ def run_unified_scraper(
     page_delay_min: float,
     page_delay_max: float,
 ) -> dict:
+    """
+    max_comments=0 → unlimited comments.
+    """
     script = f"""
 import sys
 sys.path.insert(0, r'{ENGINE_DIR}')
@@ -288,8 +352,7 @@ with InstagramScraperV16() as scraper:
     print("___RESULT_START___")
     print(json.dumps(result, ensure_ascii=False, default=str))
 """
-    # unified dengan likers bisa makan waktu lama — timeout lebih besar
-    timeout = 7200 if scrape_likers else 600
+    timeout = _estimate_timeout(max_comments, include_replies, scrape_likers)
     return _run_subprocess(script, timeout=timeout)
 
 
@@ -497,6 +560,38 @@ def _likers_to_csv_rows(likers: list) -> list:
     } for i, l in enumerate(likers)]
 
 
+def _active_commenters_to_csv_rows(active_commenters: list) -> list:
+    rows = []
+    for rank, u in enumerate(active_commenters, 1):
+        base = {
+            "rank":               rank,
+            "username":           u.get("username", ""),
+            "total_comments":     u.get("comment_count", 0),
+            "total_replies":      u.get("reply_count", 0),
+            "total_interactions": u.get("total_interactions", 0),
+            "total_likes":        u.get("total_likes", 0),
+            "dominant_category":  u.get("dominant_category", ""),
+            "dominant_sentiment": u.get("dominant_sentiment", ""),
+        }
+        for c in u.get("comments", []) or []:
+            rows.append({**base, "type": "comment", "text": c.get("text", ""),
+                         "like_count": c.get("like_count", 0), "category": c.get("category", ""),
+                         "sentiment": c.get("sentiment", ""), "reply_to": ""})
+        for r in u.get("replies", []) or []:
+            rows.append({**base, "type": "reply", "text": r.get("text", ""),
+                         "like_count": r.get("like_count", 0), "category": r.get("category", ""),
+                         "sentiment": r.get("sentiment", ""), "reply_to": r.get("reply_to", "")})
+    return rows
+
+
+ACTIVE_COMMENTER_CSV_FIELDS = [
+    "rank", "username", "total_comments", "total_replies",
+    "total_interactions", "total_likes", "dominant_category",
+    "dominant_sentiment", "type", "text", "like_count",
+    "category", "sentiment", "reply_to",
+]
+
+
 COMMENT_CSV_FIELDS = [
     "type", "number", "username", "text", "comment_id",
     "like_count", "reply_count", "created_at",
@@ -518,7 +613,7 @@ def _rows_to_csv_bytes(rows: list, fieldnames: list) -> bytes:
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
-    return buf.getvalue().encode("utf-8-sig")   # utf-8-sig agar Excel bisa baca
+    return buf.getvalue().encode("utf-8-sig")
 
 
 def _validate_json_filename(filename: str):
@@ -538,10 +633,11 @@ def _validate_json_filename(filename: str):
 def health():
     return success({
         "api":                "running",
-        "version":            "2.0.0",
+        "version":            "2.1.0",
         "engine_dir":         ENGINE_DIR,
         "output_dir":         OUTPUT_DIR,
         "engine_files_found": os.path.exists(os.path.join(ENGINE_DIR, "scraper_post.py")),
+        "safe_max_comments":  SAFE_MAX_COMMENTS,
     }, "FastAPI backend running")
 
 
@@ -627,13 +723,18 @@ def logout():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ENDPOINTS — SCRAPE POST (komentar + balasan only)
+# ENDPOINTS — SCRAPE POST
 # ════════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/scrape/post")
 def scrape_post(req: ScrapePostRequest):
+    """
+    max_comments=0 → ambil SEMUA komentar (unlimited mode).
+    Timeout otomatis disesuaikan.
+    """
     try:
         t0 = time.time()
+        is_unlimited = req.max_comments == 0
         result = run_post_scraper(
             req.url,
             req.max_comments,
@@ -646,9 +747,11 @@ def scrape_post(req: ScrapePostRequest):
         save_json_output(result, filename)
 
         result["_meta"] = {"elapsed_seconds": elapsed, "saved_file": filename}
+        mode_str = "UNLIMITED" if is_unlimited else str(req.max_comments)
         msg = (
-            f"Scraped {result.get('comments_count', 0)} comments + "
-            f"{result.get('replies_count', 0)} replies in {elapsed}s"
+            f"Scraped {result.get('comments_count', 0)} comments"
+            f" [mode: {mode_str}]"
+            f" + {result.get('replies_count', 0)} replies in {elapsed}s"
         )
         return success(result, msg)
     except Exception as e:
@@ -689,17 +792,18 @@ def scrape_posts_batch(req: ScrapePostsRequest):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ENDPOINTS — UNIFIED SCRAPE (komentar + balasan + likers sekaligus)
+# ENDPOINTS — UNIFIED SCRAPE
 # ════════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/scrape/post/unified")
 def scrape_post_unified(req: ScrapeUnifiedRequest):
     """
-    Unified scrape: ambil komentar + balasan + likers dalam satu sesi browser.
-    Lebih efisien karena tidak perlu buka halaman dua kali.
+    Unified: komentar + likers dalam satu sesi.
+    max_comments=0 → unlimited comments.
     """
     try:
         t0 = time.time()
+        is_unlimited = req.max_comments == 0
         result = run_unified_scraper(
             req.url,
             req.max_comments,
@@ -720,8 +824,9 @@ def scrape_post_unified(req: ScrapeUnifiedRequest):
         save_json_output(result, filename)
 
         result["_meta"] = {"elapsed_seconds": elapsed, "saved_file": filename}
+        mode_str = "UNLIMITED" if is_unlimited else str(req.max_comments)
         msg = (
-            f"Unified scraped: {result.get('comments_count', 0)} comments + "
+            f"Unified: {result.get('comments_count', 0)} comments [{mode_str}] + "
             f"{result.get('replies_count', 0)} replies + "
             f"{result.get('likers_fetched', 0)} likers in {elapsed}s"
         )
@@ -732,15 +837,11 @@ def scrape_post_unified(req: ScrapeUnifiedRequest):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ENDPOINTS — SCRAPE LIKERS (standalone)
+# ENDPOINTS — SCRAPE LIKERS
 # ════════════════════════════════════════════════════════════════════════════
 
 @app.post("/api/scrape/post/likers")
 def scrape_post_likers(req: ScrapePostLikersRequest):
-    """
-    Scrape siapa saja yang like sebuah post Instagram.
-    aggressive_likers=True → jeda lebih pendek, bisa push ke 1000+ likers.
-    """
     try:
         t0 = time.time()
         result = run_likers_scraper(
@@ -775,7 +876,6 @@ def scrape_post_likers(req: ScrapePostLikersRequest):
 
 @app.get("/api/download/post/{filename}")
 def download_post_json(filename: str):
-    """Download hasil scrape post sebagai JSON."""
     fp = _validate_json_filename(filename)
     with open(fp, "r", encoding="utf-8") as f:
         content = f.read()
@@ -788,7 +888,6 @@ def download_post_json(filename: str):
 
 @app.get("/api/download/likers/{filename}")
 def download_likers_json(filename: str):
-    """Download hasil scrape likers sebagai JSON."""
     fp = _validate_json_filename(filename)
     with open(fp, "r", encoding="utf-8") as f:
         content = f.read()
@@ -801,7 +900,6 @@ def download_likers_json(filename: str):
 
 @app.get("/api/download/unified/{filename}")
 def download_unified_json(filename: str):
-    """Download hasil unified scrape sebagai JSON."""
     fp = _validate_json_filename(filename)
     with open(fp, "r", encoding="utf-8") as f:
         content = f.read()
@@ -819,13 +917,8 @@ def download_unified_json(filename: str):
 @app.get("/api/download/post/{filename}/comments.csv")
 def download_post_comments_csv(
     filename: str,
-    replies: bool = Query(True, description="Sertakan balasan (true/false)"),
+    replies: bool = Query(True),
 ):
-    """
-    Download komentar (+ balasan opsional) dari hasil scrape post sebagai CSV.
-    ?replies=true  → sertakan balasan (default)
-    ?replies=false → hanya komentar utama
-    """
     fp = _validate_json_filename(filename)
     with open(fp, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -844,7 +937,6 @@ def download_post_comments_csv(
 
 @app.get("/api/download/likers/{filename}/likers.csv")
 def download_likers_csv(filename: str):
-    """Download daftar likers sebagai CSV."""
     fp = _validate_json_filename(filename)
     with open(fp, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -866,7 +958,6 @@ def download_unified_comments_csv(
     filename: str,
     replies: bool = Query(True),
 ):
-    """Download komentar dari hasil unified scrape sebagai CSV."""
     fp = _validate_json_filename(filename)
     with open(fp, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -885,7 +976,6 @@ def download_unified_comments_csv(
 
 @app.get("/api/download/unified/{filename}/likers.csv")
 def download_unified_likers_csv(filename: str):
-    """Download likers dari hasil unified scrape sebagai CSV."""
     fp = _validate_json_filename(filename)
     with open(fp, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -902,14 +992,8 @@ def download_unified_likers_csv(filename: str):
     )
 
 
-# ── Download inline (data langsung dari client, tidak perlu filename) ───────
-
 @app.post("/api/download/comments-csv")
 def download_comments_csv_inline(req: DownloadCommentsInlineRequest):
-    """
-    Terima data post langsung dari client, return CSV komentar.
-    Tidak perlu ada file yang tersimpan di server.
-    """
     rows = _comments_to_csv_rows(req.comments, include_replies=req.include_replies)
     csv_bytes = _rows_to_csv_bytes(rows, COMMENT_CSV_FIELDS)
     fname = sanitize_filename(f"{req.filename_hint}_comments.csv")
@@ -923,13 +1007,22 @@ def download_comments_csv_inline(req: DownloadCommentsInlineRequest):
 
 @app.post("/api/download/likers-csv")
 def download_likers_csv_inline(req: DownloadLikersInlineRequest):
-    """
-    Terima data likers langsung dari client, return CSV.
-    Tidak perlu ada file yang tersimpan di server.
-    """
     rows = _likers_to_csv_rows(req.likers)
     csv_bytes = _rows_to_csv_bytes(rows, LIKER_CSV_FIELDS)
     fname = sanitize_filename(f"{req.filename_hint}_likers.csv")
+
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.post("/api/download/active-commenters-csv")
+def download_active_commenters_csv_inline(req: DownloadActiveCommentersInlineRequest):
+    rows = _active_commenters_to_csv_rows(req.active_commenters)
+    csv_bytes = _rows_to_csv_bytes(rows, ACTIVE_COMMENTER_CSV_FIELDS)
+    fname = sanitize_filename(f"{req.filename_hint}_active_commenters.csv")
 
     return StreamingResponse(
         io.BytesIO(csv_bytes),

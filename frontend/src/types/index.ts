@@ -94,8 +94,11 @@ export interface SentimentSummary {
   wellwish_count: number
   wellwish_percentage: number
   avg_ml_confidence: number
+  decision_source_breakdown?: Record<string, number>
   top_liked: TopComment[]
+  top_hate_liked?: TopComment[]
   hate_examples: HateExample[]
+  toxic_examples?: ToxicExample[]
   most_active_users: ActiveUser[]
   engagement?: EngagementSummary
   replies_sentiment_breakdown?: RepliesSentimentBreakdown
@@ -116,9 +119,62 @@ export interface HateExample {
   like_count: number
 }
 
+export interface ToxicExample {
+  username: string
+  text: string
+  toxic_words: string[]
+}
+
 export interface ActiveUser {
   username: string
   comment_count: number
+}
+
+// ── Active Commenters (komentator teraktif per post) ──────────
+/** Balasan yang menempel pada satu komentar utama. */
+export interface ActiveCommenterReplyOnComment {
+  username: string
+  text: string
+  like_count: number
+  category: string
+  sentiment: string
+}
+
+/** Rincian satu komentar utama milik komentator. */
+export interface ActiveCommenterComment {
+  text: string
+  like_count: number
+  reply_count?: number
+  category: string
+  sentiment: string
+  comment_id?: string
+  created_at?: number
+  replies?: ActiveCommenterReplyOnComment[]
+}
+
+/** Balasan yang DITULIS oleh komentator (ke komentar orang lain). */
+export interface ActiveCommenterReply {
+  text: string
+  like_count: number
+  category: string
+  sentiment: string
+  comment_id?: string
+  parent_comment_id?: string
+  reply_to: string
+  created_at?: number
+}
+
+/** Agregasi satu akun: berapa kali komentar/balas, total like, dll. */
+export interface ActiveCommenter {
+  username: string
+  comment_count: number
+  reply_count: number
+  total_interactions: number
+  total_likes: number
+  dominant_category: string
+  dominant_sentiment: string
+  comments: ActiveCommenterComment[]
+  replies: ActiveCommenterReply[]
 }
 
 // ── Post Scrape Result ────────────────────────────────────────
@@ -127,6 +183,19 @@ export interface PostResult {
   shortcode: string
   scraped_at: string
   sentiment_mode: string
+
+  /**
+   * Mode scrape: "unified" | "post" | "likers"
+   * Sesuai field scrape_mode di scraper_post.py
+   */
+  scrape_mode?: string
+
+  /**
+   * true jika max_comments=0 (unlimited mode) saat scraping
+   * Field dari scraper_post.py: is_unlimited_comments
+   */
+  is_unlimited_comments?: boolean
+
   caption: string
   likes: number
   owner_username: string
@@ -143,9 +212,15 @@ export interface PostResult {
   comments: Comment[]
   comments_count: number
   replies_count?: number
+
+  /** Komentator teraktif (di-rank per total interaksi). */
+  active_commenters?: ActiveCommenter[]
+  active_commenters_count?: number
+
   include_replies?: boolean
   max_replies_per_comment?: number
   sentiment_summary: SentimentSummary
+  error?: string
   _meta?: { saved_file?: string; elapsed_seconds?: number }
 }
 
@@ -157,17 +232,35 @@ export interface UnifiedResult extends PostResult {
   likes_count: number
   likers_method: string
   likers_error: string | null
-  /** Aggressive mode flag */
-  aggressive_likers?: boolean
+  likers_enabled?: boolean
+  /** "aggressive" | "safe" */
+  likers_mode?: 'aggressive' | 'safe'
 }
 
-/** Request ke endpoint /api/scrape/unified */
+/**
+ * Request ke endpoint /api/scrape/post
+ * max_comments=0 → unlimited (scraper ambil semua hingga SAFE_MAX_COMMENTS)
+ */
+export interface ScrapePostRequest {
+  url: string
+  /** 0 = unlimited, >0 = batas komentar */
+  max_comments: number
+  include_replies?: boolean
+  max_replies_per_comment?: number
+}
+
+/**
+ * Request ke endpoint /api/scrape/post/unified
+ * max_comments=0 → unlimited comments
+ */
 export interface ScrapeUnifiedRequest {
   url: string
+  /** 0 = unlimited (ambil semua komentar) */
   max_comments: number
   include_replies: boolean
   max_replies_per_comment: number
   scrape_likers: boolean
+  /** 0 = ambil semua likers */
   max_likers: number
   aggressive_likers: boolean
   checkpoint_size: number
@@ -197,8 +290,10 @@ export interface LikersResult {
   likes_count: number
   /** Berapa liker yang berhasil diambil */
   likers_fetched: number
-  /** rest | graphql */
+  /** rest | graphql | rest+graphql | graphql_aggressive | rest+graphql_aggressive */
   method: string
+  /** "aggressive" | "safe" */
+  likers_mode?: 'aggressive' | 'safe'
   likers: LikerItem[]
   error: string | null
   _meta?: { saved_file?: string; elapsed_seconds?: number }
@@ -207,10 +302,12 @@ export interface LikersResult {
 /** Request ke endpoint /api/scrape/post/likers */
 export interface ScrapeLikersRequest {
   url: string
-  max_likers?: number           // 0 = semua
-  checkpoint_size?: number      // default 200
-  checkpoint_delay_min?: number // detik
-  checkpoint_delay_max?: number // detik
+  /** 0 = ambil semua likers */
+  max_likers?: number
+  aggressive_likers?: boolean
+  checkpoint_size?: number
+  checkpoint_delay_min?: number
+  checkpoint_delay_max?: number
   page_delay_min?: number
   page_delay_max?: number
 }
@@ -257,9 +354,11 @@ export interface OutputFile {
 // ── Health ────────────────────────────────────────────────────
 export interface HealthData {
   api: string
+  version?: string
   engine_dir: string
   output_dir: string
   engine_files_found: boolean
+  safe_max_comments?: number
 }
 
 // ── Follower / Following Item ───────────────────────────────
@@ -373,4 +472,104 @@ export interface ScrapeProfilePostsRequest {
   include_comments?: boolean
   max_comments_per_post?: number
   max_replies_per_comment?: number
+}
+
+// ════════════════════════════════════════════════════════════════
+// CHECKPOINT SESSION TYPES
+// → TEMPEL di akhir file frontend/src/types.ts (atau types/index.ts)
+//   Memakai `Comment` & `SentimentSummary` yang sudah ada di types.ts.
+// ════════════════════════════════════════════════════════════════
+
+/** Cursor posisi scraping (titik lanjut tanpa duplikat). */
+export interface CheckpointCursor {
+  /** "graphql" | "cdp" | "rest" — dikunci setelah batch pertama */
+  method: string
+  /** end_cursor (GraphQL) atau next_min_id (CDP/REST) */
+  value: string | null
+}
+
+/** Ringkasan satu batch dalam riwayat sesi. */
+export interface CheckpointBatchInfo {
+  batch_num: number
+  count: number
+  replies: number
+  scraped_at: string
+}
+
+/** State lengkap sebuah sesi checkpoint (response dari backend). */
+export interface CheckpointSession {
+  session_id: string
+  url: string
+  shortcode: string
+  /** active = masih bisa lanjut · completed = sudah finalize · error = gagal */
+  status: 'active' | 'completed' | 'error'
+
+  batch_size: number
+  include_replies: boolean
+  max_replies_per_comment: number
+
+  created_at: string
+  updated_at: string
+
+  /** Cursor lanjutan; null jika sudah habis */
+  cursor: CheckpointCursor | null
+  /** true selama masih ada komentar yang belum diambil */
+  has_more: boolean
+  /** Metode yang dipakai: graphql | cdp | rest */
+  method: string
+
+  /** Riwayat tiap batch */
+  batches: CheckpointBatchInfo[]
+
+  total_comments: number
+  total_replies: number
+
+  // ── Metadata postingan (diisi di batch pertama) ──
+  owner_username: string
+  caption: string
+  media_id: string
+  likes: number
+  media_type: 'PHOTO' | 'VIDEO' | 'CAROUSEL' | 'UNKNOWN'
+  product_type: string
+  video_views: number
+  play_count: number
+  shares_count: number
+  reshare_count: number
+  direct_send_count: number
+  saves_count: number
+
+  // ── Data gabungan ──
+  comments: Comment[]
+  sentiment_summary: SentimentSummary
+
+  /** Berapa komentar baru yang ditambahkan pada batch terakhir */
+  last_batch_added?: number
+  last_batch_added_replies?: number
+
+  error?: string | null
+  _meta?: { saved_file?: string }
+}
+
+/** Ringkasan sesi untuk daftar (GET /list). */
+export interface CheckpointSessionSummary {
+  session_id: string
+  url: string
+  shortcode: string
+  owner_username: string
+  status: 'active' | 'completed' | 'error'
+  has_more: boolean
+  total_comments: number
+  total_replies: number
+  batch_count: number
+  created_at: string
+  updated_at: string
+}
+
+/** Request mulai sesi checkpoint baru. */
+export interface StartCheckpointRequest {
+  url: string
+  /** Jumlah komentar per batch (10–1000) */
+  batch_size: number
+  include_replies: boolean
+  max_replies_per_comment: number
 }
