@@ -1,27 +1,20 @@
 'use client'
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
+
+import { useState, useMemo, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Search, Hash, Loader2, Heart, MessageCircle, Eye,
   ExternalLink, Download, AlertCircle, BadgeCheck, Settings2,
   ChevronDown, ChevronUp, Sparkles, Film, Layers,
   X, Clock, Zap, LayoutGrid, List,
-  Image as ImageIcon, Filter, TrendingUp, Rocket,
-  CheckCircle2, XCircle, Pause, Play, Trash2, RefreshCw,
-  ChevronRight, Activity, Database, Globe,
+  Image as ImageIcon, Filter, TrendingUp,
+  CheckCircle2, Pause, Trash2, RefreshCw,
+  Database, Globe,
 } from 'lucide-react'
 import {
   searchHashtag,
   searchKeyword,
   downloadSearchPostsInline,
-  discoverSearch,
-  deepSearchHashtag,
-  deepSearchKeyword,
-  listDeepJobs,
-  getDeepJob,
-  getDeepJobPosts,
-  cancelDeepJob,
-  deleteDeepJob,
 } from '@/lib/api'
 import type {
   SearchPostItem,
@@ -29,18 +22,13 @@ import type {
   KeywordSearchResult,
   HashtagSuggestion,
   UserSuggestion,
-  DeepSearchJob,
-  DeepSearchJobSummary,
-  DeepJobStatus,
 } from '@/types'
 
 // ── Constants ────────────────────────────────────────────────────
 const SCRAPE_ROUTE = '/main/scrape'
 const LIKERS_ROUTE = '/main/likers'
-const POLL_INTERVAL_MS = 3000
 
 type SearchMode = 'keyword' | 'hashtag'
-type PageTab    = 'quick' | 'deep'
 type SortBy     = 'top' | 'likes' | 'comments' | 'recent'
 type ViewMode   = 'grid' | 'list'
 
@@ -60,34 +48,10 @@ function timeAgo(ts?: number): string {
   return `${Math.floor(diff / 86400)}d ago`
 }
 
-function elapsedSince(iso?: string): string {
-  if (!iso) return ''
-  const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (sec < 60)   return `${sec}s`
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
-}
-
 function mediaIcon(type?: string) {
   if (type === 'VIDEO')    return <Film      className="w-3 h-3" />
   if (type === 'CAROUSEL') return <Layers    className="w-3 h-3" />
   return                          <ImageIcon className="w-3 h-3" />
-}
-
-const STATUS_COLOR: Record<DeepJobStatus, string> = {
-  pending:   'text-yellow-400',
-  running:   'text-blue-400',
-  completed: 'text-green-400',
-  cancelled: 'text-white/40',
-  error:     'text-red-400',
-}
-
-const STATUS_BG: Record<DeepJobStatus, string> = {
-  pending:   'bg-yellow-500/10 border-yellow-500/20',
-  running:   'bg-blue-500/10 border-blue-500/20',
-  completed: 'bg-green-500/10 border-green-500/20',
-  cancelled: 'bg-white/5 border-white/10',
-  error:     'bg-red-500/10 border-red-500/20',
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -373,146 +337,13 @@ function SuggestedUsersPanel({ users }: { users: UserSuggestion[] }) {
   )
 }
 
-// ── Deep Job Card ─────────────────────────────────────────────────
-function DeepJobCard({
-  job, isActive, onSelect, onCancel, onDelete, onViewPosts,
-}: {
-  job: DeepSearchJob | DeepSearchJobSummary
-  isActive: boolean
-  onSelect: () => void
-  onCancel: () => void
-  onDelete: () => void
-  onViewPosts: () => void
-}) {
-  const status = job.status as DeepJobStatus
-  const isRunning  = status === 'running' || status === 'pending'
-  const isDone     = status === 'completed'
-  const hasError   = status === 'error'
-
-  const progressLog = ('progress_log' in job ? (job as DeepSearchJob & {progress_log?: string[]}).progress_log : []) ?? []
-  const lastLog = progressLog[progressLog.length - 1] ?? ''
-
-  return (
-    <div
-      className={`rounded-xl border p-4 space-y-3 cursor-pointer transition-all
-                  ${isActive ? 'border-pink-500/40 bg-pink-500/5' : 'border-white/8 bg-white/3 hover:border-white/15'}
-                  ${STATUS_BG[status]}`}
-      onClick={onSelect}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          {job.mode === 'hashtag'
-            ? <Hash className="w-4 h-4 text-pink-400 shrink-0" />
-            : <Sparkles className="w-4 h-4 text-purple-400 shrink-0" />
-          }
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-white truncate">
-              {job.mode === 'hashtag' ? `#${job.query}` : `"${job.query}"`}
-            </p>
-            <p className="text-[10px] text-white/30 mt-0.5">
-              {job.mode === 'hashtag' ? 'Deep Hashtag' : 'Deep Keyword'} · {job.job_id}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium
-                            border ${STATUS_BG[status]} ${STATUS_COLOR[status]}`}>
-            {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
-            {isDone    && <CheckCircle2 className="w-3 h-3" />}
-            {hasError  && <XCircle className="w-3 h-3" />}
-            {status === 'cancelled' && <Pause className="w-3 h-3" />}
-            {status.charAt(0).toUpperCase() + status.slice(1)}
-          </span>
-        </div>
-      </div>
-
-      {/* Progress */}
-      <div className="flex items-center gap-3 text-xs text-white/50">
-        <span className="flex items-center gap-1">
-          <Database className="w-3 h-3" /> {formatNum(job.total_fetched)} posts
-        </span>
-        <span className="flex items-center gap-1">
-          <Clock className="w-3 h-3" /> {elapsedSince(job.created_at)}
-        </span>
-        {isRunning && (
-          <span className="flex items-center gap-1 text-blue-400">
-            <Activity className="w-3 h-3 animate-pulse" /> Berjalan...
-          </span>
-        )}
-      </div>
-
-      {/* Last log line */}
-      {lastLog && (
-        <p className="text-[10px] text-white/30 font-mono truncate bg-white/3 rounded px-2 py-1">
-          {lastLog}
-        </p>
-      )}
-
-      {/* Error */}
-      {hasError && 'error' in job && job.error && (
-        <p className="text-[11px] text-red-400/80 bg-red-500/5 rounded px-2 py-1">
-          {job.error}
-        </p>
-      )}
-
-      {/* Actions */}
-      <div className="flex items-center gap-2 pt-1" onClick={e => e.stopPropagation()}>
-        {isDone && (
-          <button onClick={onViewPosts}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/15
-                       border border-green-500/25 text-xs text-green-300 hover:bg-green-500/25
-                       transition-colors">
-            <Eye className="w-3 h-3" /> Lihat {formatNum(job.total_fetched)} Posts
-          </button>
-        )}
-        {isRunning && (
-          <button onClick={onCancel}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-yellow-500/10
-                       border border-yellow-500/20 text-xs text-yellow-300 hover:bg-yellow-500/20
-                       transition-colors">
-            <Pause className="w-3 h-3" /> Stop
-          </button>
-        )}
-        <button onClick={onDelete}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5
-                     border border-white/10 text-xs text-white/40 hover:text-red-300 hover:border-red-500/20
-                     transition-colors ml-auto">
-          <Trash2 className="w-3 h-3" /> Hapus
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ── Progress Log Panel ────────────────────────────────────────────
-function ProgressLogPanel({ logs }: { logs: string[] }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
-  }, [logs])
-
-  if (!logs.length) return null
-  return (
-    <div ref={ref}
-      className="rounded-xl border border-white/8 bg-black/30 p-3 max-h-40 overflow-y-auto space-y-1">
-      <p className="text-[10px] text-white/30 font-semibold uppercase tracking-widest mb-2">Log</p>
-      {logs.map((l, i) => (
-        <p key={i} className="text-[11px] font-mono text-white/50 leading-relaxed">{l}</p>
-      ))}
-    </div>
-  )
-}
-
 // ─────────────────────────────────────────────────────────────────
-// Main Page
+// Main Page (only Quick Search)
 // ─────────────────────────────────────────────────────────────────
 export default function SearchPage() {
   const router = useRouter()
 
-  // ── Tab ──────────────────────────────────────────────────────
-  const [tab, setTab] = useState<PageTab>('quick')
-
-  // ── Quick Search ─────────────────────────────────────────────
+  // Quick Search states
   const [mode, setMode]   = useState<SearchMode>('hashtag')
   const [query, setQuery] = useState('')
 
@@ -541,79 +372,7 @@ export default function SearchPage() {
   const [filterType,   setFilterType]   = useState<'all' | 'PHOTO' | 'VIDEO' | 'CAROUSEL'>('all')
   const [downloading,  setDownloading]  = useState(false)
 
-  // ── Deep Search ──────────────────────────────────────────────
-  const [deepMode,    setDeepMode]    = useState<SearchMode>('hashtag')
-  const [deepQuery,   setDeepQuery]   = useState('')
-  const [deepLoading, setDeepLoading] = useState(false)
-  const [deepError,   setDeepError]   = useState<string | null>(null)
-
-  // Deep hashtag config
-  const [deepMaxRelated, setDeepMaxRelated] = useState(20)
-  const [deepIncludeTop, setDeepIncludeTop] = useState(true)
-
-  // Deep keyword config
-  const [deepMaxHashtags, setDeepMaxHashtags] = useState(10)
-
-  const [showDeepAdvanced, setShowDeepAdvanced] = useState(false)
-
-  // Jobs list
-  const [jobs,         setJobs]         = useState<DeepSearchJob[]>([])
-  const [activeJobId,  setActiveJobId]  = useState<string | null>(null)
-  const [jobsLoading,  setJobsLoading]  = useState(false)
-
-  // Active job detail (for polling)
-  const [activeJob,    setActiveJob]    = useState<DeepSearchJob | null>(null)
-  const pollRef = useRef<NodeJS.Timeout | null>(null)
-
-  // Deep result posts
-  const [deepPosts,      setDeepPosts]      = useState<SearchPostItem[]>([])
-  const [deepPostsReady, setDeepPostsReady] = useState(false)
-  const [deepSortBy,     setDeepSortBy]     = useState<SortBy>('likes')
-  const [deepViewMode,   setDeepViewMode]   = useState<ViewMode>('grid')
-  const [deepDownloading, setDeepDownloading] = useState(false)
-
-  const inputRef     = useRef<HTMLInputElement>(null)
-  const deepInputRef = useRef<HTMLInputElement>(null)
-
-  // ── Load jobs on mount + when switching to deep tab ──────────
-  const loadJobs = useCallback(async () => {
-    setJobsLoading(true)
-    try {
-      const resp = await listDeepJobs()
-      if (resp.success) {
-        setJobs((resp.data?.jobs ?? []) as DeepSearchJob[])
-      }
-    } catch { /* silent */ }
-    finally { setJobsLoading(false) }
-  }, [])
-
-  useEffect(() => {
-    if (tab === 'deep') loadJobs()
-  }, [tab, loadJobs])
-
-  // ── Poll active job ───────────────────────────────────────────
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-  }, [])
-
-  const startPolling = useCallback((jobId: string) => {
-    stopPolling()
-    pollRef.current = setInterval(async () => {
-      try {
-        const resp = await getDeepJob(jobId)
-        if (!resp.success) return
-        const job = resp.data as DeepSearchJob & { progress_log?: string[] }
-        setActiveJob(job)
-        // Sync into jobs list
-        setJobs(prev => prev.map(j => j.job_id === jobId ? { ...j, ...job } : j))
-        if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled') {
-          stopPolling()
-        }
-      } catch { /* silent */ }
-    }, POLL_INTERVAL_MS)
-  }, [stopPolling])
-
-  useEffect(() => () => stopPolling(), [stopPolling])
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // ── Quick Search sorted posts ────────────────────────────────
   const sortedPosts = useMemo<SearchPostItem[]>(() => {
@@ -628,17 +387,6 @@ export default function SearchPage() {
     return posts
   }, [result, sortBy, filterSource, filterType])
 
-  // ── Deep posts sorted ─────────────────────────────────────────
-  const sortedDeepPosts = useMemo<SearchPostItem[]>(() => {
-    if (!deepPosts.length) return []
-    const posts = [...deepPosts]
-    if (deepSortBy === 'likes')    posts.sort((a, b) => (b.like_count ?? 0) - (a.like_count ?? 0))
-    else if (deepSortBy === 'comments') posts.sort((a, b) => (b.comment_count ?? 0) - (a.comment_count ?? 0))
-    else if (deepSortBy === 'recent')   posts.sort((a, b) => (b.taken_at ?? 0) - (a.taken_at ?? 0))
-    else posts.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
-    return posts
-  }, [deepPosts, deepSortBy])
-
   const relatedTags: HashtagSuggestion[] = useMemo(() => {
     if (!result) return []
     if ('related_hashtags' in result) return result.related_hashtags ?? []
@@ -651,7 +399,6 @@ export default function SearchPage() {
     return result.suggested_users ?? []
   }, [result])
 
-  // ── Quick search stats ────────────────────────────────────────
   const stats = useMemo(() => {
     if (!result?.posts) return null
     const posts = result.posts
@@ -663,18 +410,7 @@ export default function SearchPage() {
     }
   }, [result])
 
-  // ── Deep posts stats ──────────────────────────────────────────
-  const deepStats = useMemo(() => {
-    if (!deepPosts.length) return null
-    return {
-      totalLikes:    deepPosts.reduce((s, p) => s + (p.like_count ?? 0), 0),
-      totalComments: deepPosts.reduce((s, p) => s + (p.comment_count ?? 0), 0),
-      videos:        deepPosts.filter(p => p.media_type === 'VIDEO').length,
-      total:         deepPosts.length,
-    }
-  }, [deepPosts])
-
-  // ── Handlers: Quick ───────────────────────────────────────────
+  // ── Handlers ───────────────────────────────────────────────────
   const handleSearch = useCallback(async () => {
     const q = query.trim()
     if (!q) return
@@ -704,102 +440,11 @@ export default function SearchPage() {
   }, [query, mode, maxPosts, includeTop, includeRecent, recentPages,
       kwMaxPosts, maxHashtags, perHashtagPages, kwIncludeRecent])
 
-  // ── Handlers: Deep ────────────────────────────────────────────
-  const handleDeepSearch = useCallback(async () => {
-    const q = deepQuery.trim()
-    if (!q) return
-    setDeepLoading(true); setDeepError(null)
-    try {
-      let resp: any
-      if (deepMode === 'hashtag') {
-        resp = await deepSearchHashtag({
-          hashtag: q,
-          max_related_hashtags: deepMaxRelated,
-          include_top: deepIncludeTop,
-        })
-      } else {
-        resp = await deepSearchKeyword({
-          keyword: q,
-          max_hashtags: deepMaxHashtags,
-        })
-      }
-      if (!resp.success) throw new Error(resp.message ?? 'Gagal memulai job')
-      const jobId = resp.data?.job_id
-      if (!jobId) throw new Error('Job ID tidak ditemukan')
-
-      // Add optimistic job to list
-      setJobs(prev => [{
-        job_id:        jobId,
-        mode:          deepMode,
-        query:         q,
-        status:        'pending',
-        config:        {},
-        created_at:    new Date().toISOString(),
-        updated_at:    new Date().toISOString(),
-        total_fetched: 0,
-        error:         null,
-        progress_log:  [],
-      } as any, ...prev])
-      setActiveJobId(jobId)
-      setDeepPostsReady(false)
-      setDeepPosts([])
-      startPolling(jobId)
-    } catch (e: any) {
-      setDeepError(e?.message ?? 'Terjadi kesalahan')
-    } finally {
-      setDeepLoading(false)
-    }
-  }, [deepQuery, deepMode, deepMaxRelated, deepIncludeTop, deepMaxHashtags, startPolling])
-
-  const handleSelectJob = useCallback((job: DeepSearchJob) => {
-    setActiveJobId(job.job_id)
-    setActiveJob(job)
-    setDeepPostsReady(false)
-    setDeepPosts([])
-    if (job.status === 'running' || job.status === 'pending') {
-      startPolling(job.job_id)
-    }
-  }, [startPolling])
-
-  const handleViewPosts = useCallback(async (jobId: string) => {
-    try {
-      const resp = await getDeepJobPosts(jobId)
-      if (resp.success && resp.data?.posts) {
-        setDeepPosts(resp.data.posts)
-        setDeepPostsReady(true)
-        setDeepSortBy('likes')
-      }
-    } catch (e: any) {
-      setDeepError(e?.message ?? 'Gagal memuat posts')
-    }
-  }, [])
-
-  const handleCancelJob = useCallback(async (jobId: string) => {
-    try {
-      await cancelDeepJob(jobId)
-      stopPolling()
-      setJobs(prev => prev.map(j => j.job_id === jobId ? { ...j, status: 'cancelled' as DeepJobStatus } : j))
-      if (activeJob?.job_id === jobId) setActiveJob(prev => prev ? { ...prev, status: 'cancelled' } : null)
-    } catch { /* silent */ }
-  }, [activeJob, stopPolling])
-
-  const handleDeleteJob = useCallback(async (jobId: string) => {
-    try {
-      await deleteDeepJob(jobId)
-      setJobs(prev => prev.filter(j => j.job_id !== jobId))
-      if (activeJobId === jobId) {
-        setActiveJobId(null); setActiveJob(null)
-        setDeepPosts([]); setDeepPostsReady(false)
-        stopPolling()
-      }
-    } catch { /* silent */ }
-  }, [activeJobId, stopPolling])
-
   const handleScrapeComments = useCallback((url: string) => {
     router.push(`${SCRAPE_ROUTE}?url=${encodeURIComponent(url)}`)
   }, [router])
 
-  const handleScrapeLiners = useCallback((url: string) => {
+  const handleScrapeLikers = useCallback((url: string) => {
     router.push(`${LIKERS_ROUTE}?url=${encodeURIComponent(url)}`)
   }, [router])
 
@@ -820,38 +465,22 @@ export default function SearchPage() {
     finally { setDownloading(false) }
   }
 
-  const handleDeepDownloadCsv = async () => {
-    if (!sortedDeepPosts.length) return
-    setDeepDownloading(true)
-    try {
-      await downloadSearchPostsInline(sortedDeepPosts, `deep_${activeJob?.mode}_${activeJob?.query}`)
-    } catch (e: any) { setDeepError(e?.message ?? 'Download gagal') }
-    finally { setDeepDownloading(false) }
-  }
-
-  // ── Render helpers ────────────────────────────────────────────
   const renderPostsGrid = (posts: SearchPostItem[], vm: ViewMode) =>
     vm === 'grid' ? (
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
         {posts.map(post => (
           <PostCard key={post.media_id || post.shortcode} post={post}
-            onScrape={handleScrapeComments} onLikers={handleScrapeLiners} />
+            onScrape={handleScrapeComments} onLikers={handleScrapeLikers} />
         ))}
       </div>
     ) : (
       <div className="space-y-2">
         {posts.map(post => (
           <PostRow key={post.media_id || post.shortcode} post={post}
-            onScrape={handleScrapeComments} onLikers={handleScrapeLiners} />
+            onScrape={handleScrapeComments} onLikers={handleScrapeLikers} />
         ))}
       </div>
     )
-
-  // ── Running jobs badge count ──────────────────────────────────
-  const runningCount = jobs.filter(j => j.status === 'running' || j.status === 'pending').length
-
-  // ── Active job progress_log ───────────────────────────────────
-  const activeLogs = (activeJob as any)?.progress_log ?? []
 
   // ─────────────────────────────────────────────────────────────
   return (
@@ -877,625 +506,272 @@ export default function SearchPage() {
           </div>
         </div>
 
-        {/* ── Main Tabs ────────────────────────────────────────── */}
-        <div className="flex gap-1 p-1 bg-white/5 rounded-xl w-fit">
-          <button onClick={() => setTab('quick')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
-                        ${tab === 'quick'
-                          ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
-                          : 'text-white/50 hover:text-white/70'}`}>
-            <Search className="w-3.5 h-3.5" /> Quick Search
+        {/* ── Quick Search Card ────────────────────────────────── */}
+        <div className="rounded-2xl border border-white/8 bg-white/3 backdrop-blur-sm p-5 space-y-4">
+          {/* Mode toggle */}
+          <div className="flex gap-1 p-1 bg-white/5 rounded-xl w-fit">
+            {(['hashtag', 'keyword'] as SearchMode[]).map(m => (
+              <button key={m}
+                onClick={() => { setMode(m); setQuery(''); setResult(null); setError(null) }}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
+                            ${mode === m
+                              ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
+                              : 'text-white/50 hover:text-white/70'}`}>
+                {m === 'hashtag' ? <><Hash className="w-3.5 h-3.5" /> Hashtag</> : <><Sparkles className="w-3.5 h-3.5" /> Keyword</>}
+              </button>
+            ))}
+          </div>
+
+          {/* Input */}
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              {mode === 'hashtag'
+                ? <Hash className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
+                : <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
+              }
+              <input ref={inputRef} type="text" value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                placeholder={mode === 'hashtag' ? 'Ketik hashtag (tanpa #)...' : 'Ketik keyword...'}
+                className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-10 py-3
+                           text-sm text-white placeholder:text-white/25
+                           focus:outline-none focus:border-pink-500/50 focus:bg-white/8 transition-all" />
+              {query && (
+                <button onClick={() => { setQuery(''); setResult(null); setError(null) }}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            <button onClick={handleSearch} disabled={loading || !query.trim()}
+              className="flex items-center gap-2 px-6 py-3 bg-pink-500/20 border border-pink-500/30
+                         text-pink-300 rounded-xl text-sm font-medium hover:bg-pink-500/30 active:scale-95
+                         disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+              {loading ? <Spinner size="sm" /> : <Search className="w-4 h-4" />}
+              {loading ? 'Mencari...' : 'Cari'}
+            </button>
+          </div>
+
+          {/* Advanced toggle */}
+          <button onClick={() => setShowAdvanced(v => !v)}
+            className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/60 transition-colors">
+            <Settings2 className="w-3.5 h-3.5" />
+            Pengaturan lanjutan
+            {showAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           </button>
-          <button onClick={() => setTab('deep')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
-                        ${tab === 'deep'
-                          ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                          : 'text-white/50 hover:text-white/70'}`}>
-            <Rocket className="w-3.5 h-3.5" /> Deep Search
-            {runningCount > 0 && (
-              <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500 text-[9px] font-bold text-white">
-                {runningCount}
-              </span>
-            )}
-          </button>
+
+          {showAdvanced && (
+            <div className="border-t border-white/8 pt-4">
+              {mode === 'hashtag' ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <NumberInput label="Max Posts" value={maxPosts} onChange={setMaxPosts} min={1} max={300} />
+                    <NumberInput label="Recent Pages" value={recentPages} onChange={setRecentPages} min={1} max={12} />
+                  </div>
+                  <div className="flex flex-wrap gap-5">
+                    <Toggle label="Sertakan Top Posts" checked={includeTop} onChange={setIncludeTop} />
+                    <Toggle label="Sertakan Recent Posts" checked={includeRecent} onChange={setIncludeRecent} />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <NumberInput label="Max Posts" value={kwMaxPosts} onChange={setKwMaxPosts} min={1} max={300} />
+                    <NumberInput label="Max Hashtags" value={maxHashtags} onChange={setMaxHashtags} min={1} max={6} />
+                    <NumberInput label="Pages/Hashtag" value={perHashtagPages} onChange={setPerHashtagPages} min={1} max={5} />
+                  </div>
+                  <Toggle label="Sertakan Recent Posts" checked={kwIncludeRecent} onChange={setKwIncludeRecent} />
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* ════════════════════════════════════════════════════════
-            QUICK SEARCH TAB
-            ════════════════════════════════════════════════════ */}
-        {tab === 'quick' && (
-          <div className="space-y-6">
-            {/* Search Card */}
-            <div className="rounded-2xl border border-white/8 bg-white/3 backdrop-blur-sm p-5 space-y-4">
-              {/* Mode toggle */}
-              <div className="flex gap-1 p-1 bg-white/5 rounded-xl w-fit">
-                {(['hashtag', 'keyword'] as SearchMode[]).map(m => (
-                  <button key={m}
-                    onClick={() => { setMode(m); setQuery(''); setResult(null); setError(null) }}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
-                                ${mode === m
-                                  ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
-                                  : 'text-white/50 hover:text-white/70'}`}>
-                    {m === 'hashtag' ? <><Hash className="w-3.5 h-3.5" /> Hashtag</> : <><Sparkles className="w-3.5 h-3.5" /> Keyword</>}
-                  </button>
-                ))}
-              </div>
-
-              {/* Input */}
-              <div className="flex gap-2">
-                <div className="flex-1 relative">
-                  {mode === 'hashtag'
-                    ? <Hash className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
-                    : <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
-                  }
-                  <input ref={inputRef} type="text" value={query}
-                    onChange={e => setQuery(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                    placeholder={mode === 'hashtag' ? 'Ketik hashtag (tanpa #)...' : 'Ketik keyword...'}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-10 py-3
-                               text-sm text-white placeholder:text-white/25
-                               focus:outline-none focus:border-pink-500/50 focus:bg-white/8 transition-all" />
-                  {query && (
-                    <button onClick={() => { setQuery(''); setResult(null); setError(null) }}
-                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors">
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-                <button onClick={handleSearch} disabled={loading || !query.trim()}
-                  className="flex items-center gap-2 px-6 py-3 bg-pink-500/20 border border-pink-500/30
-                             text-pink-300 rounded-xl text-sm font-medium hover:bg-pink-500/30 active:scale-95
-                             disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-                  {loading ? <Spinner size="sm" /> : <Search className="w-4 h-4" />}
-                  {loading ? 'Mencari...' : 'Cari'}
-                </button>
-              </div>
-
-              {/* Advanced toggle */}
-              <button onClick={() => setShowAdvanced(v => !v)}
-                className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/60 transition-colors">
-                <Settings2 className="w-3.5 h-3.5" />
-                Pengaturan lanjutan
-                {showAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              </button>
-
-              {showAdvanced && (
-                <div className="border-t border-white/8 pt-4">
-                  {mode === 'hashtag' ? (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                        <NumberInput label="Max Posts" value={maxPosts} onChange={setMaxPosts} min={1} max={300} />
-                        <NumberInput label="Recent Pages" value={recentPages} onChange={setRecentPages} min={1} max={12} />
-                      </div>
-                      <div className="flex flex-wrap gap-5">
-                        <Toggle label="Sertakan Top Posts" checked={includeTop} onChange={setIncludeTop} />
-                        <Toggle label="Sertakan Recent Posts" checked={includeRecent} onChange={setIncludeRecent} />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                        <NumberInput label="Max Posts" value={kwMaxPosts} onChange={setKwMaxPosts} min={1} max={300} />
-                        <NumberInput label="Max Hashtags" value={maxHashtags} onChange={setMaxHashtags} min={1} max={6} />
-                        <NumberInput label="Pages/Hashtag" value={perHashtagPages} onChange={setPerHashtagPages} min={1} max={5} />
-                      </div>
-                      <Toggle label="Sertakan Recent Posts" checked={kwIncludeRecent} onChange={setKwIncludeRecent} />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Error */}
-            {error && (
-              <div className="flex items-start gap-3 p-4 rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 text-sm">
-                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                <div className="flex-1"><p className="font-medium">Pencarian gagal</p>
-                  <p className="text-red-300/70 text-xs mt-0.5">{error}</p></div>
-                <button onClick={() => setError(null)} className="text-red-300/50 hover:text-red-300 transition-colors">
-                  <X className="w-4 h-4" /></button>
-              </div>
-            )}
-
-            {/* Loading skeleton */}
-            {loading && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3 text-sm text-white/40">
-                  <Spinner size="sm" /><span>Mengambil postingan dari Instagram...</span>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <div key={i} className="rounded-xl overflow-hidden border border-white/8 bg-white/3 animate-pulse">
-                      <div className="aspect-square bg-white/5" />
-                      <div className="p-3 space-y-2">
-                        <div className="h-3 bg-white/5 rounded w-3/4" />
-                        <div className="h-2 bg-white/5 rounded w-full" />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Results */}
-            {!loading && result && (
-              <div className="space-y-5">
-                {/* Result header */}
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-base font-bold text-white">{result.total_fetched} postingan</span>
-                      {'hashtag' in result && (
-                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-pink-500/15 border border-pink-500/20 text-xs text-pink-300">
-                          <Hash className="w-3 h-3" />{result.hashtag}
-                          {result.formatted_media_count && <span className="text-pink-300/50">· {result.formatted_media_count}</span>}
-                        </span>
-                      )}
-                      {'searched_hashtags' in result && result.searched_hashtags.length > 0 && (
-                        <div className="flex gap-1 flex-wrap">
-                          {result.searched_hashtags.map(t => (
-                            <span key={t} className="flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-pink-500/15 border border-pink-500/20 text-xs text-pink-300">
-                              <Hash className="w-3 h-3" />{t}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {stats && (
-                      <div className="flex items-center gap-3 text-xs text-white/35">
-                        <span className="flex items-center gap-1"><Heart className="w-3 h-3" /> {formatNum(stats.totalLikes)} total likes</span>
-                        <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" /> {formatNum(stats.totalComments)} total komentar</span>
-                        {stats.videos > 0 && <span className="flex items-center gap-1"><Film className="w-3 h-3" /> {stats.videos} video</span>}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={handleDownloadCsv} disabled={downloading || !sortedPosts.length}
-                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 bg-white/5
-                                 text-xs text-white/60 hover:text-white/90 hover:border-white/20
-                                 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-                      {downloading ? <Spinner size="sm" /> : <Download className="w-3.5 h-3.5" />} CSV
-                    </button>
-                    <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
-                      <button onClick={() => setViewMode('grid')}
-                        className={`p-1.5 rounded transition-colors ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
-                        <LayoutGrid className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => setViewMode('list')}
-                        className={`p-1.5 rounded transition-colors ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
-                        <List className="w-3.5 h-3.5" /></button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Sort & filter bar */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
-                    {([
-                      { key: 'top', label: 'Top', icon: <Zap className="w-3 h-3" /> },
-                      { key: 'likes', label: 'Likes', icon: <Heart className="w-3 h-3" /> },
-                      { key: 'comments', label: 'Komentar', icon: <MessageCircle className="w-3 h-3" /> },
-                      { key: 'recent', label: 'Terbaru', icon: <Clock className="w-3 h-3" /> },
-                    ] as { key: SortBy; label: string; icon: React.ReactNode }[]).map(s => (
-                      <button key={s.key} onClick={() => setSortBy(s.key)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-all
-                                    ${sortBy === s.key ? 'bg-pink-500/20 text-pink-300 border border-pink-500/25' : 'text-white/40 hover:text-white/70'}`}>
-                        {s.icon}{s.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
-                    {(['all', 'top', 'recent'] as const).map(f => (
-                      <button key={f} onClick={() => setFilterSource(f)}
-                        className={`px-2.5 py-1.5 rounded text-xs font-medium transition-all
-                                    ${filterSource === f ? 'bg-white/10 text-white' : 'text-white/35 hover:text-white/60'}`}>
-                        {f === 'all' ? 'Semua' : f === 'top' ? '⚡ Top' : '🕒 Recent'}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
-                    {(['all', 'PHOTO', 'VIDEO', 'CAROUSEL'] as const).map(f => (
-                      <button key={f} onClick={() => setFilterType(f)}
-                        className={`px-2.5 py-1.5 rounded text-xs font-medium transition-all
-                                    ${filterType === f ? 'bg-white/10 text-white' : 'text-white/35 hover:text-white/60'}`}>
-                        {f === 'all' ? 'Semua' : f === 'PHOTO' ? '🖼 Foto' : f === 'VIDEO' ? '🎥 Video' : '🎞 Carousel'}
-                      </button>
-                    ))}
-                  </div>
-                  {(filterSource !== 'all' || filterType !== 'all') && (
-                    <button onClick={() => { setFilterSource('all'); setFilterType('all') }}
-                      className="flex items-center gap-1 px-2 py-1.5 rounded text-xs text-white/40 hover:text-white/70 transition-colors">
-                      <X className="w-3 h-3" /> Reset filter
-                    </button>
-                  )}
-                  <span className="text-xs text-white/30 ml-auto">{sortedPosts.length} dari {result.total_fetched}</span>
-                </div>
-
-                {/* Posts + sidebar */}
-                <div className="flex gap-5">
-                  <div className="flex-1 min-w-0">
-                    {sortedPosts.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-16 text-center">
-                        <Search className="w-10 h-10 text-white/15 mb-3" />
-                        <p className="text-white/40 text-sm">Tidak ada postingan yang cocok</p>
-                      </div>
-                    ) : renderPostsGrid(sortedPosts, viewMode)}
-                  </div>
-                  {(relatedTags.length > 0 || suggestedUsers.length > 0) && (
-                    <div className="w-60 shrink-0 hidden lg:flex flex-col gap-4">
-                      <RelatedHashtagsPanel tags={relatedTags} onSelect={handleTagClick} />
-                      <SuggestedUsersPanel users={suggestedUsers} />
-                    </div>
-                  )}
-                </div>
-
-                {/* Mobile sidebar */}
-                {(relatedTags.length > 0 || suggestedUsers.length > 0) && (
-                  <div className="lg:hidden space-y-4">
-                    <RelatedHashtagsPanel tags={relatedTags} onSelect={handleTagClick} />
-                    <SuggestedUsersPanel users={suggestedUsers} />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Empty state */}
-            {!loading && !result && !error && (
-              <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-pink-500/20 to-purple-500/20
-                                border border-pink-500/20 flex items-center justify-center">
-                  {mode === 'hashtag' ? <Hash className="w-7 h-7 text-pink-400/70" /> : <Sparkles className="w-7 h-7 text-pink-400/70" />}
-                </div>
-                <div className="space-y-1">
-                  <p className="text-white/50 font-medium text-sm">
-                    {mode === 'hashtag' ? 'Masukkan hashtag untuk melihat postingan' : 'Masukkan keyword untuk mencari postingan relevan'}
-                  </p>
-                  <p className="text-white/25 text-xs">
-                    {mode === 'hashtag' ? 'Contoh: kuliner, exploreindonesia, ootd' : 'Contoh: baju batik, wisata bali, resep masakan'}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2 justify-center pt-2">
-                  {(mode === 'hashtag'
-                    ? ['exploreindonesia', 'kuliner', 'ootd', 'travel', 'photography']
-                    : ['baju batik', 'wisata bali', 'resep kue', 'startup indonesia']
-                  ).map(ex => (
-                    <button key={ex}
-                      onClick={() => { setQuery(ex); setTimeout(() => inputRef.current?.focus(), 0) }}
-                      className="px-3 py-1.5 rounded-full border border-white/8 bg-white/3
-                                 text-xs text-white/40 hover:text-white/70 hover:border-white/20 transition-all">
-                      {mode === 'hashtag' ? `#${ex}` : ex}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+        {/* Error */}
+        {error && (
+          <div className="flex items-start gap-3 p-4 rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 text-sm">
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+            <div className="flex-1"><p className="font-medium">Pencarian gagal</p>
+              <p className="text-red-300/70 text-xs mt-0.5">{error}</p></div>
+            <button onClick={() => setError(null)} className="text-red-300/50 hover:text-red-300 transition-colors">
+              <X className="w-4 h-4" /></button>
           </div>
         )}
 
-        {/* ════════════════════════════════════════════════════════
-            DEEP SEARCH TAB
-            ════════════════════════════════════════════════════ */}
-        {tab === 'deep' && (
-          <div className="space-y-6">
+        {/* Loading skeleton */}
+        {loading && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 text-sm text-white/40">
+              <Spinner size="sm" /><span>Mengambil postingan dari Instagram...</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+              {Array.from({ length: 10 }).map((_, i) => (
+                <div key={i} className="rounded-xl overflow-hidden border border-white/8 bg-white/3 animate-pulse">
+                  <div className="aspect-square bg-white/5" />
+                  <div className="p-3 space-y-2">
+                    <div className="h-3 bg-white/5 rounded w-3/4" />
+                    <div className="h-2 bg-white/5 rounded w-full" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-            {/* Info banner */}
-            <div className="flex items-start gap-3 p-4 rounded-xl border border-purple-500/20 bg-purple-500/8 text-sm">
-              <Rocket className="w-4 h-4 text-purple-400 mt-0.5 shrink-0" />
-              <div className="space-y-1">
-                <p className="font-medium text-purple-300">Deep Search — Mode Maksimal</p>
-                <p className="text-white/50 text-xs leading-relaxed">
-                  Hashtag: scrape Top + semua halaman Recent hingga 12 halaman, lalu ekspansi ke hingga {deepMaxRelated} related hashtags.<br />
-                  Keyword: temukan hingga {deepMaxHashtags} hashtag relevan via topsearch, scrape tiap hashtag secara mendalam.<br />
-                  Job berjalan di background — Anda bisa menutup halaman ini dan kembali untuk melihat hasilnya.
-                </p>
+        {/* Results */}
+        {!loading && result && (
+          <div className="space-y-5">
+            {/* Result header */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-base font-bold text-white">{result.total_fetched} postingan</span>
+                  {'hashtag' in result && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-pink-500/15 border border-pink-500/20 text-xs text-pink-300">
+                      <Hash className="w-3 h-3" />{result.hashtag}
+                      {result.formatted_media_count && <span className="text-pink-300/50">· {result.formatted_media_count}</span>}
+                    </span>
+                  )}
+                  {'searched_hashtags' in result && result.searched_hashtags.length > 0 && (
+                    <div className="flex gap-1 flex-wrap">
+                      {result.searched_hashtags.map(t => {
+                        const tagName = typeof t === 'string' ? t : t.hashtag
+                        return (
+                          <span key={tagName} className="flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-pink-500/15 border border-pink-500/20 text-xs text-pink-300">
+                            <Hash className="w-3 h-3" />{tagName}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+                {stats && (
+                  <div className="flex items-center gap-3 text-xs text-white/35">
+                    <span className="flex items-center gap-1"><Heart className="w-3 h-3" /> {formatNum(stats.totalLikes)} total likes</span>
+                    <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" /> {formatNum(stats.totalComments)} total komentar</span>
+                    {stats.videos > 0 && <span className="flex items-center gap-1"><Film className="w-3 h-3" /> {stats.videos} video</span>}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={handleDownloadCsv} disabled={downloading || !sortedPosts.length}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 bg-white/5
+                             text-xs text-white/60 hover:text-white/90 hover:border-white/20
+                             disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                  {downloading ? <Spinner size="sm" /> : <Download className="w-3.5 h-3.5" />} CSV
+                </button>
+                <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
+                  <button onClick={() => setViewMode('grid')}
+                    className={`p-1.5 rounded transition-colors ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
+                    <LayoutGrid className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setViewMode('list')}
+                    className={`p-1.5 rounded transition-colors ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
+                    <List className="w-3.5 h-3.5" /></button>
+                </div>
               </div>
             </div>
 
-            {/* Deep Search Form */}
-            <div className="rounded-2xl border border-white/8 bg-white/3 backdrop-blur-sm p-5 space-y-4">
-              {/* Mode toggle */}
-              <div className="flex gap-1 p-1 bg-white/5 rounded-xl w-fit">
-                {(['hashtag', 'keyword'] as SearchMode[]).map(m => (
-                  <button key={m} onClick={() => setDeepMode(m)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
-                                ${deepMode === m
-                                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                                  : 'text-white/50 hover:text-white/70'}`}>
-                    {m === 'hashtag' ? <><Hash className="w-3.5 h-3.5" /> Hashtag</> : <><Sparkles className="w-3.5 h-3.5" /> Keyword</>}
+            {/* Sort & filter bar */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
+                {([
+                  { key: 'top', label: 'Top', icon: <Zap className="w-3 h-3" /> },
+                  { key: 'likes', label: 'Likes', icon: <Heart className="w-3 h-3" /> },
+                  { key: 'comments', label: 'Komentar', icon: <MessageCircle className="w-3 h-3" /> },
+                  { key: 'recent', label: 'Terbaru', icon: <Clock className="w-3 h-3" /> },
+                ] as { key: SortBy; label: string; icon: React.ReactNode }[]).map(s => (
+                  <button key={s.key} onClick={() => setSortBy(s.key)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-all
+                                ${sortBy === s.key ? 'bg-pink-500/20 text-pink-300 border border-pink-500/25' : 'text-white/40 hover:text-white/70'}`}>
+                    {s.icon}{s.label}
                   </button>
                 ))}
               </div>
-
-              {/* Input */}
-              <div className="flex gap-2">
-                <div className="flex-1 relative">
-                  {deepMode === 'hashtag'
-                    ? <Hash className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
-                    : <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
-                  }
-                  <input ref={deepInputRef} type="text" value={deepQuery}
-                    onChange={e => setDeepQuery(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleDeepSearch()}
-                    placeholder={deepMode === 'hashtag' ? 'Hashtag (tanpa #)...' : 'Keyword yang ingin di-deep search...'}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-10 py-3
-                               text-sm text-white placeholder:text-white/25
-                               focus:outline-none focus:border-purple-500/50 focus:bg-white/8 transition-all" />
-                  {deepQuery && (
-                    <button onClick={() => setDeepQuery('')}
-                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors">
-                      <X className="w-4 h-4" /></button>
-                  )}
-                </div>
-                <button onClick={handleDeepSearch} disabled={deepLoading || !deepQuery.trim()}
-                  className="flex items-center gap-2 px-6 py-3 bg-purple-500/20 border border-purple-500/30
-                             text-purple-300 rounded-xl text-sm font-medium hover:bg-purple-500/30 active:scale-95
-                             disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-                  {deepLoading ? <Spinner size="sm" /> : <Rocket className="w-4 h-4" />}
-                  {deepLoading ? 'Memulai...' : 'Deep Search'}
-                </button>
+              <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
+                {(['all', 'top', 'recent'] as const).map(f => (
+                  <button key={f} onClick={() => setFilterSource(f)}
+                    className={`px-2.5 py-1.5 rounded text-xs font-medium transition-all
+                                ${filterSource === f ? 'bg-white/10 text-white' : 'text-white/35 hover:text-white/60'}`}>
+                    {f === 'all' ? 'Semua' : f === 'top' ? '⚡ Top' : '🕒 Recent'}
+                  </button>
+                ))}
               </div>
-
-              {/* Advanced toggle */}
-              <button onClick={() => setShowDeepAdvanced(v => !v)}
-                className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/60 transition-colors">
-                <Settings2 className="w-3.5 h-3.5" />
-                Konfigurasi deep search
-                {showDeepAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              </button>
-
-              {showDeepAdvanced && (
-                <div className="border-t border-white/8 pt-4">
-                  {deepMode === 'hashtag' ? (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                        <NumberInput label="Max Related Hashtags" value={deepMaxRelated} onChange={setDeepMaxRelated} min={1} max={50} />
-                      </div>
-                      <Toggle label="Sertakan Top Posts" checked={deepIncludeTop} onChange={setDeepIncludeTop} />
-                      <div className="p-3 rounded-lg bg-white/3 border border-white/8 text-xs text-white/40 space-y-1">
-                        <p className="font-medium text-white/60">Yang akan dilakukan:</p>
-                        <p>1. Scrape #{deepQuery || 'hashtag'} — 12 halaman recent + top</p>
-                        <p>2. Ekspansi ke {deepMaxRelated} related hashtags (masing-masing 3 halaman)</p>
-                        <p>3. Dedup + gabungkan semua postingan</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                        <NumberInput label="Max Hashtags" value={deepMaxHashtags} onChange={setDeepMaxHashtags} min={1} max={20} />
-                      </div>
-                      <div className="p-3 rounded-lg bg-white/3 border border-white/8 text-xs text-white/40 space-y-1">
-                        <p className="font-medium text-white/60">Yang akan dilakukan:</p>
-                        <p>1. Topsearch "{deepQuery || 'keyword'}" → dapat {deepMaxHashtags} hashtag relevan</p>
-                        <p>2. Scrape tiap hashtag (5 halaman recent + top)</p>
-                        <p>3. Dedup + rank by likes</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
+              <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
+                {(['all', 'PHOTO', 'VIDEO', 'CAROUSEL'] as const).map(f => (
+                  <button key={f} onClick={() => setFilterType(f)}
+                    className={`px-2.5 py-1.5 rounded text-xs font-medium transition-all
+                                ${filterType === f ? 'bg-white/10 text-white' : 'text-white/35 hover:text-white/60'}`}>
+                    {f === 'all' ? 'Semua' : f === 'PHOTO' ? '🖼 Foto' : f === 'VIDEO' ? '🎥 Video' : '🎞 Carousel'}
+                  </button>
+                ))}
+              </div>
+              {(filterSource !== 'all' || filterType !== 'all') && (
+                <button onClick={() => { setFilterSource('all'); setFilterType('all') }}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded text-xs text-white/40 hover:text-white/70 transition-colors">
+                  <X className="w-3 h-3" /> Reset filter
+                </button>
               )}
+              <span className="text-xs text-white/30 ml-auto">{sortedPosts.length} dari {result.total_fetched}</span>
             </div>
 
-            {/* Deep error */}
-            {deepError && (
-              <div className="flex items-start gap-3 p-4 rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 text-sm">
-                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                <div className="flex-1"><p className="font-medium">Error</p>
-                  <p className="text-red-300/70 text-xs mt-0.5">{deepError}</p></div>
-                <button onClick={() => setDeepError(null)} className="text-red-300/50 hover:text-red-300 transition-colors">
-                  <X className="w-4 h-4" /></button>
-              </div>
-            )}
-
-            {/* Main layout: jobs list + active job detail */}
+            {/* Posts + sidebar */}
             <div className="flex gap-5">
-
-              {/* Jobs list */}
-              <div className="w-80 shrink-0 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-semibold text-white/40 uppercase tracking-widest">
-                    Jobs ({jobs.length})
-                  </p>
-                  <button onClick={loadJobs} disabled={jobsLoading}
-                    className="p-1.5 rounded-lg bg-white/5 text-white/30 hover:text-white/60 transition-colors disabled:opacity-50">
-                    <RefreshCw className={`w-3 h-3 ${jobsLoading ? 'animate-spin' : ''}`} />
-                  </button>
-                </div>
-
-                {jobsLoading && !jobs.length && (
-                  <div className="flex items-center gap-2 text-sm text-white/30 py-4">
-                    <Spinner size="sm" /><span>Memuat jobs...</span>
+              <div className="flex-1 min-w-0">
+                {sortedPosts.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-center">
+                    <Search className="w-10 h-10 text-white/15 mb-3" />
+                    <p className="text-white/40 text-sm">Tidak ada postingan yang cocok</p>
                   </div>
-                )}
-
-                {!jobsLoading && jobs.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-10 text-center">
-                    <Database className="w-8 h-8 text-white/10 mb-2" />
-                    <p className="text-white/30 text-xs">Belum ada deep search job</p>
-                    <p className="text-white/20 text-[10px] mt-1">Mulai deep search di form di atas</p>
-                  </div>
-                )}
-
-                <div className="space-y-3">
-                  {jobs.map(job => (
-                    <DeepJobCard
-                      key={job.job_id}
-                      job={job}
-                      isActive={activeJobId === job.job_id}
-                      onSelect={() => handleSelectJob(job)}
-                      onCancel={() => handleCancelJob(job.job_id)}
-                      onDelete={() => handleDeleteJob(job.job_id)}
-                      onViewPosts={() => handleViewPosts(job.job_id)}
-                    />
-                  ))}
-                </div>
+                ) : renderPostsGrid(sortedPosts, viewMode)}
               </div>
-
-              {/* Active job detail panel */}
-              <div className="flex-1 min-w-0 space-y-5">
-                {!activeJobId && (
-                  <div className="flex flex-col items-center justify-center py-20 text-center">
-                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20
-                                    border border-purple-500/20 flex items-center justify-center mb-4">
-                      <Rocket className="w-7 h-7 text-purple-400/70" />
-                    </div>
-                    <p className="text-white/40 text-sm font-medium">Pilih job atau mulai deep search baru</p>
-                    <p className="text-white/20 text-xs mt-1">Hasil akan muncul di sini setelah job selesai</p>
-                  </div>
-                )}
-
-                {activeJobId && activeJob && (
-                  <div className="space-y-4">
-                    {/* Job header */}
-                    <div className={`rounded-xl border p-4 ${STATUS_BG[activeJob.status as DeepJobStatus]}`}>
-                      <div className="flex items-center justify-between gap-3 mb-3">
-                        <div className="flex items-center gap-2">
-                          {activeJob.mode === 'hashtag'
-                            ? <Hash className="w-5 h-5 text-pink-400" />
-                            : <Sparkles className="w-5 h-5 text-purple-400" />
-                          }
-                          <div>
-                            <p className="font-bold text-white">
-                              {activeJob.mode === 'hashtag' ? `#${activeJob.query}` : `"${activeJob.query}"`}
-                            </p>
-                            <p className="text-[10px] text-white/30">
-                              {activeJob.mode === 'hashtag' ? 'Deep Hashtag Search' : 'Deep Keyword Search'} · {activeJob.job_id}
-                            </p>
-                          </div>
-                        </div>
-                        <span className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
-                                          border ${STATUS_BG[activeJob.status as DeepJobStatus]} ${STATUS_COLOR[activeJob.status as DeepJobStatus]}`}>
-                          {(activeJob.status === 'running' || activeJob.status === 'pending') && (
-                            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-                          )}
-                          {activeJob.status === 'completed' && <CheckCircle2 className="w-3.5 h-3.5" />}
-                          {activeJob.status === 'error' && <XCircle className="w-3.5 h-3.5" />}
-                          {activeJob.status.charAt(0).toUpperCase() + activeJob.status.slice(1)}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-3">
-                        <div className="rounded-lg bg-white/5 p-3 text-center">
-                          <p className="text-lg font-bold text-white">{formatNum(activeJob.total_fetched)}</p>
-                          <p className="text-[10px] text-white/40">Posts dikumpulkan</p>
-                        </div>
-                        <div className="rounded-lg bg-white/5 p-3 text-center">
-                          <p className="text-lg font-bold text-white">{elapsedSince(activeJob.created_at)}</p>
-                          <p className="text-[10px] text-white/40">Waktu berjalan</p>
-                        </div>
-                        <div className="rounded-lg bg-white/5 p-3 text-center">
-                          <p className="text-lg font-bold text-white capitalize">{activeJob.mode}</p>
-                          <p className="text-[10px] text-white/40">Mode</p>
-                        </div>
-                      </div>
-
-                      {/* Running actions */}
-                      {(activeJob.status === 'running' || activeJob.status === 'pending') && (
-                        <div className="flex items-center gap-2 mt-3">
-                          <div className="flex items-center gap-2 text-xs text-blue-400">
-                            <Activity className="w-3.5 h-3.5 animate-pulse" />
-                            <span>Job sedang berjalan — polling setiap {POLL_INTERVAL_MS / 1000}s</span>
-                          </div>
-                          <button onClick={() => handleCancelJob(activeJob.job_id)}
-                            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg
-                                       bg-yellow-500/10 border border-yellow-500/20 text-xs text-yellow-300
-                                       hover:bg-yellow-500/20 transition-colors">
-                            <Pause className="w-3 h-3" /> Stop Job
-                          </button>
-                        </div>
-                      )}
-
-                      {/* Completed: view posts button */}
-                      {activeJob.status === 'completed' && (
-                        <div className="flex items-center gap-3 mt-3">
-                          {!deepPostsReady ? (
-                            <button onClick={() => handleViewPosts(activeJob.job_id)}
-                              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-500/15
-                                         border border-green-500/25 text-sm text-green-300 hover:bg-green-500/25 transition-colors">
-                              <Eye className="w-4 h-4" /> Muat {formatNum(activeJob.total_fetched)} Posts
-                            </button>
-                          ) : (
-                            <span className="flex items-center gap-2 text-xs text-green-400">
-                              <CheckCircle2 className="w-4 h-4" /> {formatNum(deepPosts.length)} posts dimuat
-                            </span>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Error */}
-                      {activeJob.status === 'error' && activeJob.error && (
-                        <div className="mt-3 p-2 rounded bg-red-500/10 text-xs text-red-300">
-                          {activeJob.error}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Progress log */}
-                    {activeLogs.length > 0 && <ProgressLogPanel logs={activeLogs} />}
-
-                    {/* Posts panel (after loading) */}
-                    {deepPostsReady && deepPosts.length > 0 && (
-                      <div className="space-y-4">
-                        {/* Posts header */}
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="space-y-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="text-base font-bold text-white">{deepPosts.length} postingan</span>
-                              <span className="px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/20 text-xs text-purple-300">
-                                Deep Result
-                              </span>
-                            </div>
-                            {deepStats && (
-                              <div className="flex items-center gap-3 text-xs text-white/35">
-                                <span className="flex items-center gap-1"><Heart className="w-3 h-3" /> {formatNum(deepStats.totalLikes)} total likes</span>
-                                <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" /> {formatNum(deepStats.totalComments)} total komentar</span>
-                                {deepStats.videos > 0 && <span className="flex items-center gap-1"><Film className="w-3 h-3" /> {deepStats.videos} video</span>}
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <button onClick={handleDeepDownloadCsv} disabled={deepDownloading}
-                              className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 bg-white/5
-                                         text-xs text-white/60 hover:text-white/90 hover:border-white/20
-                                         disabled:opacity-50 transition-all">
-                              {deepDownloading ? <Spinner size="sm" /> : <Download className="w-3.5 h-3.5" />} CSV
-                            </button>
-                            <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
-                              <button onClick={() => setDeepViewMode('grid')}
-                                className={`p-1.5 rounded transition-colors ${deepViewMode === 'grid' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
-                                <LayoutGrid className="w-3.5 h-3.5" /></button>
-                              <button onClick={() => setDeepViewMode('list')}
-                                className={`p-1.5 rounded transition-colors ${deepViewMode === 'list' ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
-                                <List className="w-3.5 h-3.5" /></button>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Deep sort bar */}
-                        <div className="flex gap-1 p-1 bg-white/5 rounded-lg w-fit">
-                          {([
-                            { key: 'likes', label: 'Likes', icon: <Heart className="w-3 h-3" /> },
-                            { key: 'comments', label: 'Komentar', icon: <MessageCircle className="w-3 h-3" /> },
-                            { key: 'recent', label: 'Terbaru', icon: <Clock className="w-3 h-3" /> },
-                            { key: 'top', label: 'Rank', icon: <TrendingUp className="w-3 h-3" /> },
-                          ] as { key: SortBy; label: string; icon: React.ReactNode }[]).map(s => (
-                            <button key={s.key} onClick={() => setDeepSortBy(s.key)}
-                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-all
-                                          ${deepSortBy === s.key ? 'bg-purple-500/20 text-purple-300 border border-purple-500/25' : 'text-white/40 hover:text-white/70'}`}>
-                              {s.icon}{s.label}
-                            </button>
-                          ))}
-                        </div>
-
-                        {/* Deep posts grid/list */}
-                        {renderPostsGrid(sortedDeepPosts, deepViewMode)}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              {(relatedTags.length > 0 || suggestedUsers.length > 0) && (
+                <div className="w-60 shrink-0 hidden lg:flex flex-col gap-4">
+                  <RelatedHashtagsPanel tags={relatedTags} onSelect={handleTagClick} />
+                  <SuggestedUsersPanel users={suggestedUsers} />
+                </div>
+              )}
             </div>
+
+            {/* Mobile sidebar */}
+            {(relatedTags.length > 0 || suggestedUsers.length > 0) && (
+              <div className="lg:hidden space-y-4">
+                <RelatedHashtagsPanel tags={relatedTags} onSelect={handleTagClick} />
+                <SuggestedUsersPanel users={suggestedUsers} />
+              </div>
+            )}
           </div>
         )}
 
+        {/* Empty state */}
+        {!loading && !result && !error && (
+          <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-linear-to-br from-pink-500/20 to-purple-500/20
+                            border border-pink-500/20 flex items-center justify-center">
+              {mode === 'hashtag' ? <Hash className="w-7 h-7 text-pink-400/70" /> : <Sparkles className="w-7 h-7 text-pink-400/70" />}
+            </div>
+            <div className="space-y-1">
+              <p className="text-white/50 font-medium text-sm">
+                {mode === 'hashtag' ? 'Masukkan hashtag untuk melihat postingan' : 'Masukkan keyword untuk mencari postingan relevan'}
+              </p>
+              <p className="text-white/25 text-xs">
+                {mode === 'hashtag' ? 'Contoh: kuliner, exploreindonesia, ootd' : 'Contoh: baju batik, wisata bali, resep masakan'}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 justify-center pt-2">
+              {(mode === 'hashtag'
+                ? ['exploreindonesia', 'kuliner', 'ootd', 'travel', 'photography']
+                : ['baju batik', 'wisata bali', 'resep kue', 'startup indonesia']
+              ).map(ex => (
+                <button key={ex}
+                  onClick={() => { setQuery(ex); setTimeout(() => inputRef.current?.focus(), 0) }}
+                  className="px-3 py-1.5 rounded-full border border-white/8 bg-white/3
+                             text-xs text-white/40 hover:text-white/70 hover:border-white/20 transition-all">
+                  {mode === 'hashtag' ? `#${ex}` : ex}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

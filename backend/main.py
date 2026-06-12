@@ -1493,7 +1493,10 @@ def search_keyword_endpoint(req: SearchKeywordRequest):
             filename = f"api_search_kw_{sanitize_filename(req.keyword)[:40]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             save_json_output(result, filename)
             result["_meta"] = {"elapsed_seconds": elapsed, "saved_file": filename}
-            tags = ", ".join("#" + t for t in result.get("searched_hashtags", []))
+            tags = ", ".join(
+                "#" + (t["hashtag"] if isinstance(t, dict) else t)
+                for t in result.get("searched_hashtags", [])
+            )
             return success(result, f"'{req.keyword}': {result.get('total_fetched', 0)} post dari {tags or '—'}")
         result.setdefault("_meta", {})["elapsed_seconds"] = elapsed
         return failure(result.get("error") or "Pencarian keyword gagal", result)

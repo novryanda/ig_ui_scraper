@@ -651,12 +651,18 @@ export interface HashtagSearchResult {
   _meta?: { saved_file?: string; elapsed_seconds?: number }
 }
 
+export type KeywordSearchedHashtag = {
+  hashtag: string
+  method?: string
+  fetched?: number
+}
+
 export interface KeywordSearchResult {
   query: string
   scraped_at: string
   scraped_date: string
   success: boolean
-  searched_hashtags: string[]
+  searched_hashtags: Array<string | KeywordSearchedHashtag>
   suggested_hashtags: HashtagSuggestion[]
   suggested_users: UserSuggestion[]
   total_fetched: number
