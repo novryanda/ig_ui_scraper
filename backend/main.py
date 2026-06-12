@@ -33,9 +33,21 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ── APP ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Instagram Scraper API", version="2.1.0")
 
+
+def _parse_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "").strip()
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+
+_cors_origins = _parse_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
