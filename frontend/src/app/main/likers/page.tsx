@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useSyncExternalStore, useEffect } from 'react'
+import { Suspense, useState, useSyncExternalStore, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
   Heart, Link2, Loader2, AlertCircle, Clock,
@@ -199,7 +199,7 @@ function DownloadBtn({
 // ══════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════
-export default function LikersPage() {
+function LikersContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -792,5 +792,13 @@ export default function LikersPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function LikersPage() {
+  return (
+    <Suspense fallback={null}>
+      <LikersContent />
+    </Suspense>
   )
 }

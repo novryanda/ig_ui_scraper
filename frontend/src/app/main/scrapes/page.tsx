@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useSyncExternalStore, useCallback } from 'react'
+import { Suspense, useState, useEffect, useSyncExternalStore, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
   Search, Link2, Loader2, AlertCircle, ChevronDown, ChevronUp,
@@ -1001,7 +1001,7 @@ const DEFAULT_LIKERS_CONFIG: LikersConfig = {
 
 const CLIENT_SAFE_MAX = 2000
 
-export default function ScrapePage() {
+function ScrapeContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -1467,5 +1467,13 @@ export default function ScrapePage() {
         </>
       )}
     </div>
+  )
+}
+
+export default function ScrapePage() {
+  return (
+    <Suspense fallback={null}>
+      <ScrapeContent />
+    </Suspense>
   )
 }
