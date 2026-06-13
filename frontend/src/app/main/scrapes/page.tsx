@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useSyncExternalStore, useCallback, Suspense } from 'react'
+import { Suspense, useState, useEffect, useSyncExternalStore, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
   Search, Link2, Loader2, AlertCircle, ChevronDown, ChevronUp,
@@ -1001,7 +1001,7 @@ const DEFAULT_LIKERS_CONFIG: LikersConfig = {
 
 const CLIENT_SAFE_MAX = 2000
 
-function ScrapePageInner() {
+function ScrapeContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -1470,11 +1470,10 @@ function ScrapePageInner() {
   )
 }
 
-// useSearchParams() butuh Suspense boundary saat production build (Next.js).
 export default function ScrapePage() {
   return (
     <Suspense fallback={null}>
-      <ScrapePageInner />
+      <ScrapeContent />
     </Suspense>
   )
 }

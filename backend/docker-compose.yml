@@ -1,12 +1,12 @@
 services:
   backend:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
     image: rezeki1/ig-scraper-backend:latest
     container_name: ig-scraper-backend
     expose:
-      - "8000"
+      - "${API_PORT:-8000}"
     environment:
       - FLASK_API_BASE=${FLASK_API_BASE}
       - ENGINE_PATH=${ENGINE_PATH}
@@ -18,44 +18,32 @@ services:
       - HEADLESS=${HEADLESS}
       - PROFILE_DIR=${PROFILE_DIR}
       - CORS_ORIGINS=${CORS_ORIGINS}
-      - HTTP_PROXY=${HTTP_PROXY}
-      - HTTPS_PROXY=${HTTPS_PROXY}
-      - ALL_PROXY=${ALL_PROXY}
-      - NO_PROXY=${NO_PROXY}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - ALL_PROXY=${ALL_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-}
     volumes:
       - backend_data:/app/data
       - backend_session:/app/session
+      - backend_profile:/app/chrome_profile_playwright
     restart: unless-stopped
     networks:
       - dokploy-network
     dns:
       - 1.1.1.1
       - 8.8.8.8
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    image: rezeki1/ig-scraper-frontend:latest
-    container_name: ig-scraper-frontend
-    expose:
-      - "3000"
-    environment:
-      - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-      - INTERNAL_API_URL=${INTERNAL_API_URL}
-      - HTTP_PROXY=${HTTP_PROXY}
-      - HTTPS_PROXY=${HTTPS_PROXY}
-      - ALL_PROXY=${ALL_PROXY}
-      - NO_PROXY=${NO_PROXY}
-    depends_on:
-      - backend
-    restart: unless-stopped
-    networks:
-      - dokploy-network
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"API_PORT\", \"8000\")}/api/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 networks:
   dokploy-network:
@@ -64,3 +52,4 @@ networks:
 volumes:
   backend_data:
   backend_session:
+  backend_profile:
