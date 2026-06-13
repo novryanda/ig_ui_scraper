@@ -86,7 +86,7 @@ function ReplyItem({ reply }: { reply: DeepScrapeComment }) {
           </span>
         )}
       </div>
-      <p className="text-xs text-white/50 mt-0.5 pl-5 break-words">{reply.text}</p>
+      <p className="text-xs text-white/50 mt-0.5 pl-5 wrap-break-word">{reply.text}</p>
       {reply.emojis && reply.emojis.length > 0 && (
         <span className="text-[10px] text-white/30 pl-5">{reply.emojis.join(' ')}</span>
       )}
@@ -125,7 +125,7 @@ function CommentItem({ comment }: { comment: DeepScrapeComment }) {
               </span>
             )}
           </div>
-          <p className="text-xs text-white/60 mt-0.5 break-words">{comment.text}</p>
+          <p className="text-xs text-white/60 mt-0.5 wrap-break-word">{comment.text}</p>
           {comment.emojis && comment.emojis.length > 0 && (
             <span className="text-[10px] text-white/30">{comment.emojis.join(' ')}</span>
           )}

@@ -1,10 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
 import {
   Layers, Loader2, ChevronDown, ChevronUp, Clock, AlertCircle,
-  Download, Heart, MessageCircle, Users, BadgeCheck, Trophy, ArrowRight, Search,
+  Download, Heart, MessageCircle, Users, BadgeCheck, Trophy, Search,
 } from 'lucide-react'
 import { scrapeProfileDeep, getDeepScrapeProgress, getDeepScrapeResult } from '@/lib/api'
 import { scrapeStore, useScrapeTask } from '@/lib/scrapeStore'
@@ -75,7 +74,7 @@ function PostRow({ post, index }: { post: DeepScrapeResult['posts'][number]; ind
     <div className="glass rounded-xl overflow-hidden">
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/[0.04] transition-colors text-left"
+        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/4 transition-colors text-left"
       >
         <span className="text-xs text-white/30 w-6 shrink-0">#{index + 1}</span>
         {post.thumbnail_url ? (
@@ -139,7 +138,7 @@ function PostRow({ post, index }: { post: DeepScrapeResult['posts'][number]; ind
                         <span className="text-[11px] text-white/30">{fmt(c.reply_count)} balasan</span>
                       )}
                     </div>
-                    <p className="text-white/55 text-xs break-words">{c.text}</p>
+                    <p className="text-white/55 text-xs wrap-break-word">{c.text}</p>
                   </div>
                 </div>
                 {/* Balasan dari komentar top */}
@@ -153,7 +152,7 @@ function PostRow({ post, index }: { post: DeepScrapeResult['posts'][number]; ind
                             <Heart size={9} /> {fmt(r.like_count)}
                           </span>
                         </div>
-                        <p className="text-white/40 text-[11px] break-words">{r.text}</p>
+                        <p className="text-white/40 text-[11px] wrap-break-word">{r.text}</p>
                       </div>
                     ))}
                   </div>
@@ -172,7 +171,6 @@ export function ProfileDeepScrapePanel({ initialUsername = '', locked = false }:
   initialUsername?: string
   locked?: boolean
 }) {
-  const router = useRouter()
   const [username, setUsername] = useState(initialUsername)
   const user = cleanUsername(username)
   const key = `profile-deep:${locked ? (initialUsername || 'locked') : 'main'}`
@@ -396,12 +394,6 @@ export function ProfileDeepScrapePanel({ initialUsername = '', locked = false }:
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => router.push(`/main/profiles/${result.username}`)}
-                className="btn-glass text-xs flex items-center gap-1.5"
-              >
-                Lihat Detail <ArrowRight size={12} />
-              </button>
               {result.saved_file && (
                 <a
                   href={`${API_BASE}/api/output/${result.saved_file}`}

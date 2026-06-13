@@ -394,7 +394,6 @@ export default function SearchPage() {
   // UI
   const [sortBy,       setSortBy]       = useState<SortBy>('top')
   const [viewMode,     setViewMode]     = useState<ViewMode>('grid')
-  const [filterSource, setFilterSource] = useState<'all' | 'top' | 'recent'>('all')
   const [filterType,   setFilterType]   = useState<'all' | 'PHOTO' | 'VIDEO' | 'CAROUSEL'>('all')
   const [downloading,  setDownloading]  = useState(false)
 
@@ -404,14 +403,13 @@ export default function SearchPage() {
   const sortedPosts = useMemo<SearchPostItem[]>(() => {
     if (!result?.posts) return []
     let posts = [...result.posts]
-    if (filterSource !== 'all') posts = posts.filter(p => p.source === filterSource)
-    if (filterType   !== 'all') posts = posts.filter(p => p.media_type === filterType)
+    if (filterType !== 'all') posts = posts.filter(p => p.media_type === filterType)
     if (sortBy === 'likes')    posts.sort((a, b) => (b.like_count ?? 0) - (a.like_count ?? 0))
     else if (sortBy === 'comments') posts.sort((a, b) => (b.comment_count ?? 0) - (a.comment_count ?? 0))
     else if (sortBy === 'recent')   posts.sort((a, b) => (b.taken_at ?? 0) - (a.taken_at ?? 0))
     else posts.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
     return posts
-  }, [result, sortBy, filterSource, filterType])
+  }, [result, sortBy, filterType])
 
   const relatedTags: HashtagSuggestion[] = useMemo(() => {
     if (!result) return []
@@ -442,7 +440,7 @@ export default function SearchPage() {
     if (!q) return
     // Ikut global lock: kalau ada scraping lain berjalan, jangan jalankan.
     if (scrapeStore.isBusy()) return
-    setSortBy('top'); setFilterSource('all'); setFilterType('all')
+    setSortBy('top'); setFilterType('all')
 
     const key = mode === 'hashtag' ? SEARCH_KEY_HASHTAG : SEARCH_KEY_KEYWORD
     await scrapeStore.run<SearchTaskData>(
@@ -734,15 +732,6 @@ export default function SearchPage() {
                 ))}
               </div>
               <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
-                {(['all', 'top', 'recent'] as const).map(f => (
-                  <button key={f} onClick={() => setFilterSource(f)}
-                    className={`px-2.5 py-1.5 rounded text-xs font-medium transition-all
-                                ${filterSource === f ? 'bg-white/10 text-white' : 'text-white/35 hover:text-white/60'}`}>
-                    {f === 'all' ? 'Semua' : f === 'top' ? '⚡ Top' : '🕒 Recent'}
-                  </button>
-                ))}
-              </div>
-              <div className="flex gap-1 p-1 bg-white/5 rounded-lg">
                 {(['all', 'PHOTO', 'VIDEO', 'CAROUSEL'] as const).map(f => (
                   <button key={f} onClick={() => setFilterType(f)}
                     className={`px-2.5 py-1.5 rounded text-xs font-medium transition-all
@@ -751,8 +740,8 @@ export default function SearchPage() {
                   </button>
                 ))}
               </div>
-              {(filterSource !== 'all' || filterType !== 'all') && (
-                <button onClick={() => { setFilterSource('all'); setFilterType('all') }}
+              {filterType !== 'all' && (
+                <button onClick={() => setFilterType('all')}
                   className="flex items-center gap-1 px-2 py-1.5 rounded text-xs text-white/40 hover:text-white/70 transition-colors">
                   <X className="w-3 h-3" /> Reset filter
                 </button>

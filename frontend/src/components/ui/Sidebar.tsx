@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard, Search, Users, BarChart2, FileJson,
-  Settings, Wifi, WifiOff, ChevronRight, Hash, Layers,
+  Settings, Wifi, WifiOff, ChevronRight, Hash, Layers, PanelLeftClose,
 } from 'lucide-react'
 import { IGLogoFilled } from '@/components/ui/IGLogo'
 import { clsx } from 'clsx'
@@ -22,7 +22,7 @@ const NAV = [
   { href: '/main/settings',     label: 'Settings',      icon: Settings },
 ]
 
-export function Sidebar() {
+export function Sidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const pathname = usePathname()
   const [engineOk, setEngineOk]       = useState(false)
   const [sessionUser, setSessionUser] = useState<string | null>(null)
@@ -49,24 +49,39 @@ export function Sidebar() {
   }, [check])
 
   return (
-    <aside className="fixed left-0 top-0 h-full w-64 flex flex-col z-50">
+    <aside
+      className={clsx(
+        'fixed left-0 top-0 h-full w-64 flex flex-col z-50 transition-transform duration-300',
+        open ? 'translate-x-0' : '-translate-x-full',
+      )}
+    >
       <div className="absolute inset-0 glass border-r border-white/[0.07]" />
 
       <div className="relative flex flex-col h-full px-4 py-6">
 
-        {/* ── Logo ── */}
-        <Link href="/main/dashboard" className="flex items-center gap-3 mb-8 px-2">
-          <IGLogoFilled size={40} />
-          <div>
-            <p
-              className="font-display font-800 text-lg leading-none"
-              style={{ fontFamily: 'var(--font-display)', fontWeight: 800 }}
-            >
-              <span className="ig-text">IG Scraper</span>
-            </p>
-            <p className="text-[11px] text-white/40 mt-0.5">Analytics Dashboard</p>
-          </div>
-        </Link>
+        {/* ── Logo + tombol sembunyikan ── */}
+        <div className="flex items-center justify-between mb-8 px-2 gap-2">
+          <Link href="/main/dashboard" className="flex items-center gap-3 min-w-0">
+            <IGLogoFilled size={40} />
+            <div className="min-w-0">
+              <p
+                className="font-display font-800 text-lg leading-none"
+                style={{ fontFamily: 'var(--font-display)', fontWeight: 800 }}
+              >
+                <span className="ig-text">IG Scraper</span>
+              </p>
+              <p className="text-[11px] text-white/40 mt-0.5">Analytics Dashboard</p>
+            </div>
+          </Link>
+          <button
+            onClick={onToggle}
+            title="Sembunyikan sidebar"
+            aria-label="Sembunyikan sidebar"
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors shrink-0"
+          >
+            <PanelLeftClose size={18} />
+          </button>
+        </div>
 
         {/* ── Engine badge ── */}
         <div className="glass rounded-xl px-3 py-2.5 mb-6 flex items-center gap-2.5">
