@@ -23,14 +23,25 @@ import type {
   HashtagSuggestion,
   UserSuggestion,
 } from '@/types'
+import { scrapeStore, useScrapeTask, useScrapeBusy } from '@/lib/scrapeStore'
 
 // ── Constants ────────────────────────────────────────────────────
-const SCRAPE_ROUTE = '/main/scrape'
+const SCRAPE_ROUTE = '/main/scrapes'
 const LIKERS_ROUTE = '/main/likers'
+// Keyword & hashtag = 2 fitur terpisah, masing-masing punya output yang
+// dipersist sendiri lintas-navigasi.
+const SEARCH_KEY_HASHTAG = 'search:hashtag'
+const SEARCH_KEY_KEYWORD = 'search:keyword'
+
+type SearchTaskData = HashtagSearchResult | KeywordSearchResult
 
 type SearchMode = 'keyword' | 'hashtag'
 type SortBy     = 'top' | 'likes' | 'comments' | 'recent'
 type ViewMode   = 'grid' | 'list'
+
+// Mode terakhir (keyword/hashtag) disimpan di module agar bertahan saat
+// pindah halaman lalu kembali.
+let lastSearchMode: SearchMode = 'hashtag'
 
 // ── Helpers ──────────────────────────────────────────────────────
 function formatNum(n?: number): string {
@@ -344,7 +355,8 @@ export default function SearchPage() {
   const router = useRouter()
 
   // Quick Search states
-  const [mode, setMode]   = useState<SearchMode>('hashtag')
+  const [mode, setModeState] = useState<SearchMode>(() => lastSearchMode)
+  const setMode = useCallback((m: SearchMode) => { lastSearchMode = m; setModeState(m) }, [])
   const [query, setQuery] = useState('')
 
   // Hashtag options
@@ -361,9 +373,23 @@ export default function SearchPage() {
 
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const [loading,   setLoading]   = useState(false)
-  const [error,     setError]     = useState<string | null>(null)
-  const [result,    setResult]    = useState<HashtagSearchResult | KeywordSearchResult | null>(null)
+  // Tiap mode punya key sendiri → hasil hashtag & keyword persist terpisah.
+  const searchKey  = mode === 'hashtag' ? SEARCH_KEY_HASHTAG : SEARCH_KEY_KEYWORD
+  const task       = useScrapeTask<SearchTaskData>(searchKey)
+  const globalBusy = useScrapeBusy()
+  const loading    = task.status === 'running'
+  const result     = task.status === 'success' ? task.data : null
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const error = downloadError ?? (task.status === 'error' ? task.error : null)
+
+  // Search ikut global lock: tidak bisa jalan saat ada scraping lain berjalan.
+  const disabled    = loading || globalBusy
+  const foreignBusy = globalBusy && !loading
+
+  function clearResult() {
+    scrapeStore.resetTask(searchKey)
+    setDownloadError(null)
+  }
 
   // UI
   const [sortBy,       setSortBy]       = useState<SortBy>('top')
@@ -414,29 +440,32 @@ export default function SearchPage() {
   const handleSearch = useCallback(async () => {
     const q = query.trim()
     if (!q) return
-    setLoading(true); setError(null); setResult(null)
+    // Ikut global lock: kalau ada scraping lain berjalan, jangan jalankan.
+    if (scrapeStore.isBusy()) return
     setSortBy('top'); setFilterSource('all'); setFilterType('all')
-    try {
-      if (mode === 'hashtag') {
-        const resp = await searchHashtag({
-          hashtag: q, max_posts: maxPosts,
-          include_top: includeTop, include_recent: includeRecent, recent_pages: recentPages,
-        })
-        if (!resp.data?.success) throw new Error(resp.data?.error ?? resp.message ?? 'Gagal')
-        setResult(resp.data)
-      } else {
+
+    const key = mode === 'hashtag' ? SEARCH_KEY_HASHTAG : SEARCH_KEY_KEYWORD
+    await scrapeStore.run<SearchTaskData>(
+      key,
+      'search',
+      mode === 'hashtag' ? `#${q}` : q,
+      async (): Promise<SearchTaskData> => {
+        if (mode === 'hashtag') {
+          const resp = await searchHashtag({
+            hashtag: q, max_posts: maxPosts,
+            include_top: includeTop, include_recent: includeRecent, recent_pages: recentPages,
+          })
+          if (!resp.data?.success) throw new Error(resp.data?.error ?? resp.message ?? 'Gagal')
+          return resp.data
+        }
         const resp = await searchKeyword({
           keyword: q, max_posts: kwMaxPosts, max_hashtags: maxHashtags,
           per_hashtag_pages: perHashtagPages, include_recent: kwIncludeRecent,
         })
         if (!resp.data?.success) throw new Error(resp.data?.error ?? resp.message ?? 'Gagal')
-        setResult(resp.data)
-      }
-    } catch (e: any) {
-      setError(e?.message ?? 'Terjadi kesalahan')
-    } finally {
-      setLoading(false)
-    }
+        return resp.data
+      },
+    )
   }, [query, mode, maxPosts, includeTop, includeRecent, recentPages,
       kwMaxPosts, maxHashtags, perHashtagPages, kwIncludeRecent])
 
@@ -449,19 +478,21 @@ export default function SearchPage() {
   }, [router])
 
   const handleTagClick = useCallback((tagName: string) => {
-    setMode('hashtag'); setQuery(tagName); setResult(null); setError(null)
+    setMode('hashtag'); setQuery(tagName)
+    scrapeStore.resetTask(SEARCH_KEY_HASHTAG); setDownloadError(null)
     setTimeout(() => inputRef.current?.focus(), 0)
   }, [])
 
   const handleDownloadCsv = async () => {
     if (!sortedPosts.length) return
     setDownloading(true)
+    setDownloadError(null)
     try {
       const hint = result
         ? ('hashtag' in result ? `search_tag_${result.hashtag}` : `search_kw_${query}`)
         : 'search'
       await downloadSearchPostsInline(sortedPosts, hint)
-    } catch (e: any) { setError(e?.message ?? 'Download gagal') }
+    } catch (e: unknown) { setDownloadError(e instanceof Error ? e.message : 'Download gagal') }
     finally { setDownloading(false) }
   }
 
@@ -495,7 +526,7 @@ export default function SearchPage() {
         {/* ── Header ──────────────────────────────────────────── */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-gradient-to-br from-pink-500/20 to-purple-500/20
+            <div className="p-2 rounded-xl bg-linear-to-br from-pink-500/20 to-purple-500/20
                             border border-pink-500/20">
               <Search className="w-5 h-5 text-pink-400" />
             </div>
@@ -506,14 +537,29 @@ export default function SearchPage() {
           </div>
         </div>
 
+        {/* ── Banner: scraping lain sedang berjalan ─────────────── */}
+        {foreignBusy && (
+          <div className="flex items-start gap-3 p-4 rounded-xl border border-yellow-500/20 bg-yellow-500/10">
+            <Clock className="w-4 h-4 mt-0.5 shrink-0 text-yellow-400 animate-pulse" />
+            <div className="flex-1">
+              <p className="text-sm text-yellow-300 font-medium">Scraping masih berjalan</p>
+              <p className="text-xs text-white/50 mt-0.5">
+                Tunggu sampai proses scraping yang sedang berjalan selesai sebelum mencari.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* ── Quick Search Card ────────────────────────────────── */}
         <div className="rounded-2xl border border-white/8 bg-white/3 backdrop-blur-sm p-5 space-y-4">
           {/* Mode toggle */}
           <div className="flex gap-1 p-1 bg-white/5 rounded-xl w-fit">
             {(['hashtag', 'keyword'] as SearchMode[]).map(m => (
               <button key={m}
-                onClick={() => { setMode(m); setQuery(''); setResult(null); setError(null) }}
+                onClick={() => { if (!disabled) { setMode(m); setQuery(''); setDownloadError(null) } }}
+                disabled={disabled}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
+                            disabled:opacity-50 disabled:cursor-not-allowed
                             ${mode === m
                               ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
                               : 'text-white/50 hover:text-white/70'}`}>
@@ -529,26 +575,26 @@ export default function SearchPage() {
                 ? <Hash className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
                 : <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
               }
-              <input ref={inputRef} type="text" value={query}
+              <input ref={inputRef} type="text" value={query} disabled={disabled}
                 onChange={e => setQuery(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSearch()}
                 placeholder={mode === 'hashtag' ? 'Ketik hashtag (tanpa #)...' : 'Ketik keyword...'}
                 className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-10 py-3
-                           text-sm text-white placeholder:text-white/25
+                           text-sm text-white placeholder:text-white/25 disabled:opacity-50
                            focus:outline-none focus:border-pink-500/50 focus:bg-white/8 transition-all" />
               {query && (
-                <button onClick={() => { setQuery(''); setResult(null); setError(null) }}
+                <button onClick={() => { setQuery(''); clearResult() }}
                   className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors">
                   <X className="w-4 h-4" />
                 </button>
               )}
             </div>
-            <button onClick={handleSearch} disabled={loading || !query.trim()}
+            <button onClick={handleSearch} disabled={disabled || !query.trim()}
               className="flex items-center gap-2 px-6 py-3 bg-pink-500/20 border border-pink-500/30
                          text-pink-300 rounded-xl text-sm font-medium hover:bg-pink-500/30 active:scale-95
                          disabled:opacity-50 disabled:cursor-not-allowed transition-all">
               {loading ? <Spinner size="sm" /> : <Search className="w-4 h-4" />}
-              {loading ? 'Mencari...' : 'Cari'}
+              {loading ? 'Mencari...' : globalBusy ? 'Menunggu...' : 'Cari'}
             </button>
           </div>
 
@@ -593,7 +639,7 @@ export default function SearchPage() {
             <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
             <div className="flex-1"><p className="font-medium">Pencarian gagal</p>
               <p className="text-red-300/70 text-xs mt-0.5">{error}</p></div>
-            <button onClick={() => setError(null)} className="text-red-300/50 hover:text-red-300 transition-colors">
+            <button onClick={clearResult} className="text-red-300/50 hover:text-red-300 transition-colors">
               <X className="w-4 h-4" /></button>
           </div>
         )}

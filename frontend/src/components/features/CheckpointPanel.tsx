@@ -34,9 +34,16 @@ import {
 import type {
   CheckpointSession,
   CheckpointSessionSummary,
+  StartCheckpointRequest,
 } from '@/types'
 import { SentimentChart } from '@/components/features/SentimentChart'
 import { CommentList } from '@/components/features/CommentList'
+import { scrapeStore, useScrapeTask } from '@/lib/scrapeStore'
+
+// Key task untuk sesi checkpoint yang sedang aktif — dipersist di module
+// supaya proses (start/continue/finalize) tetap jalan & sesi tetap tampil
+// walau user pindah halaman lalu kembali.
+export const CHECKPOINT_KEY = 'checkpoint:active'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types & helpers
@@ -140,12 +147,16 @@ function SessionDetailView({
   onFinalize,
   onBack,
   running,
+  busy,
 }: {
   session: CheckpointSession
   onContinue: () => void
   onFinalize: () => void
   onBack: () => void
+  /** true bila batch sesi ini sedang berjalan (tampilkan spinner) */
   running: boolean
+  /** true bila ada proses scraping LAIN yang berjalan (kunci tombol) */
+  busy: boolean
 }) {
   const [showComments, setShowComments] = useState(false)
   const [showSentiment, setShowSentiment] = useState(false)
@@ -298,20 +309,20 @@ function SessionDetailView({
         {canContinue && (
           <button
             onClick={onContinue}
-            disabled={running}
+            disabled={running || busy}
             className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold
               bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30
               hover:border-blue-500/60 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-            {running ? 'Scraping…' : 'Lanjut Batch'}
+            {running ? 'Scraping…' : busy ? 'Menunggu…' : 'Lanjut Batch'}
           </button>
         )}
 
         {canFinalize && !session.has_more && (
           <button
             onClick={onFinalize}
-            disabled={running}
+            disabled={running || busy}
             className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold
               bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30
               hover:border-emerald-500/60 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
@@ -325,7 +336,7 @@ function SessionDetailView({
         {canFinalize && session.has_more && (
           <button
             onClick={onFinalize}
-            disabled={running}
+            disabled={running || busy}
             className="px-3 py-2.5 rounded-xl text-xs text-white/40 glass
               hover:text-orange-300 hover:border-orange-500/30 transition-all disabled:opacity-50"
             title="Stop & finalisasi sekarang"
@@ -412,39 +423,38 @@ function SessionListCard({
 function NewSessionForm({
   initialUrl,
   disabled,
+  starting,
+  error,
   onStart,
 }: {
   initialUrl: string
   disabled: boolean
-  onStart: (session: CheckpointSession) => void
+  /** true bila proses start sedang berjalan (dari store) */
+  starting: boolean
+  /** error dari proses start (dari store) */
+  error: string
+  onStart: (params: StartCheckpointRequest) => void
 }) {
   const [url, setUrl]               = useState(initialUrl)
   const [batchSize, setBatchSize]   = useState(300)
   const [replies, setReplies]       = useState(false)
   const [maxReplies, setMaxReplies] = useState(20)
-  const [loading, setLoading]       = useState(false)
-  const [error, setError]           = useState('')
+  const [localError, setLocalError] = useState('')
 
   useEffect(() => { if (initialUrl) setUrl(initialUrl) }, [initialUrl])
 
-  async function handleStart() {
-    if (!url.trim()) { setError('Masukkan URL post/reel'); return }
-    setError('')
-    setLoading(true)
-    try {
-      const resp = await startCheckpointSession({
-        url: url.trim(),
-        batch_size: batchSize,
-        include_replies: replies,
-        max_replies_per_comment: maxReplies,
-      })
-      if (!resp.success) throw new Error(resp.message)
-      onStart(resp.data)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Gagal memulai sesi')
-    } finally {
-      setLoading(false)
-    }
+  const loading    = starting
+  const shownError = localError || error
+
+  function handleStart() {
+    if (!url.trim()) { setLocalError('Masukkan URL post/reel'); return }
+    setLocalError('')
+    onStart({
+      url: url.trim(),
+      batch_size: batchSize,
+      include_replies: replies,
+      max_replies_per_comment: maxReplies,
+    })
   }
 
   return (
@@ -514,9 +524,9 @@ function NewSessionForm({
         <span>Balasan: <span className="text-white/70 font-medium">{replies ? `${maxReplies}/komentar` : 'Tidak'}</span></span>
       </div>
 
-      {error && (
+      {shownError && (
         <div className="flex items-center gap-2 text-red-400 text-xs glass rounded-xl px-3 py-2.5 border border-red-500/20">
-          <XCircle size={12} /> {error}
+          <XCircle size={12} /> {shownError}
         </div>
       )}
 
@@ -549,11 +559,22 @@ export interface CheckpointPanelProps {
 
 export function CheckpointPanel({ currentUrl = '', onSessionActive, globalBusy = false }: CheckpointPanelProps) {
   const [tab, setTab]                           = useState<PanelTab>('new')
-  const [activeSession, setActive]              = useState<CheckpointSession | null>(null)
   const [sessions, setSessions]                 = useState<CheckpointSessionSummary[]>([])
   const [loadingSessions, setLoadingSessions]   = useState(false)
-  const [runningBatch, setRunningBatch]         = useState(false)
-  const [batchError, setBatchError]             = useState('')
+  const [localError, setLocalError]             = useState('')
+
+  // ── Sesi aktif + status batch dipersist di scrapeStore ──────────────────
+  // Proses (start/continue/finalize) berjalan lewat scrapeStore.run(), jadi
+  // tetap jalan walau halaman di-unmount; sesi tetap tampil saat kembali.
+  const task          = useScrapeTask<CheckpointSession>(CHECKPOINT_KEY)
+  const activeSession = task.data
+  const runningBatch  = task.status === 'running'
+  const taskError     = task.status === 'error' ? (task.error ?? '') : ''
+  const batchError    = localError || taskError
+
+  // globalBusy = ada proses scraping berjalan (termasuk batch checkpoint ini).
+  // foreignBusy = proses LAIN yang berjalan (bukan batch checkpoint ini).
+  const foreignBusy   = globalBusy && !runningBatch
 
   // notify parent
   useEffect(() => {
@@ -577,12 +598,32 @@ export function CheckpointPanel({ currentUrl = '', onSessionActive, globalBusy =
     if (tab === 'sessions') loadSessions()
   }, [tab, loadSessions])
 
-  // open session from list
+  // ── Start sesi baru (lewat store, exclusive lock + persist) ──────────────
+  async function startSession(params: StartCheckpointRequest) {
+    setLocalError('')
+    const res = await scrapeStore.run<CheckpointSession>(
+      CHECKPOINT_KEY,
+      'single',
+      `checkpoint ${params.url}`,
+      async () => {
+        const resp = await startCheckpointSession(params)
+        if (!resp.success) throw new Error(resp.message)
+        return resp.data
+      },
+    )
+    if (res.busy) setLocalError('Proses scraping lain sedang berjalan. Tunggu selesai.')
+  }
+
+  // open session from list — fetch ringan, set sebagai aktif tanpa lock
   async function openSession(id: string) {
     try {
       const resp = await getCheckpointSession(id)
       if (resp.success) {
-        setActive(resp.data)
+        scrapeStore.setTaskData(
+          CHECKPOINT_KEY, resp.data, 'single',
+          `@${resp.data.owner_username || resp.data.shortcode}`,
+        )
+        setLocalError('')
         setTab('new')
       }
     } catch {
@@ -596,61 +637,47 @@ export function CheckpointPanel({ currentUrl = '', onSessionActive, globalBusy =
     try {
       await deleteCheckpointSession(id)
       setSessions(prev => prev.filter(s => s.session_id !== id))
-      if (activeSession?.session_id === id) setActive(null)
+      if (activeSession?.session_id === id) scrapeStore.resetTask(CHECKPOINT_KEY)
     } catch {
       // ignore
     }
   }
 
-  // ─── FIX: continue batch TIDAK pakai scrapeStore ──────────────────────────
-  // scrapeStore.begin() hanya menerima 'single' | 'batch' | 'unified'.
-  // Checkpoint punya kontrol sendiri via runningBatch state.
-  // globalBusy (dari parent) digunakan untuk mencegah overlap dengan scrape lain.
+  // continue batch — lewat store, pertahankan sesi tampil saat batch berjalan
   const continueBatch = useCallback(async () => {
     if (!activeSession || runningBatch) return
-
-    if (globalBusy) {
-      setBatchError('Proses scraping lain sedang berjalan. Tunggu selesai.')
-      return
-    }
-
-    setBatchError('')
-    setRunningBatch(true)
-
-    try {
-      const resp = await continueCheckpointSession(activeSession.session_id)
-      if (!resp.success) throw new Error(resp.message)
-      setActive(resp.data)
-    } catch (e) {
-      setBatchError(e instanceof Error ? e.message : 'Gagal melanjutkan batch')
-    } finally {
-      setRunningBatch(false)
-    }
-  }, [activeSession, runningBatch, globalBusy])
+    setLocalError('')
+    const res = await scrapeStore.run<CheckpointSession>(
+      CHECKPOINT_KEY,
+      'single',
+      `checkpoint @${activeSession.owner_username || activeSession.shortcode}`,
+      async () => {
+        const resp = await continueCheckpointSession(activeSession.session_id)
+        if (!resp.success) throw new Error(resp.message)
+        return resp.data
+      },
+      { keepDataWhileRunning: true },
+    )
+    if (res.busy) setLocalError('Proses scraping lain sedang berjalan. Tunggu selesai.')
+  }, [activeSession, runningBatch])
 
   // finalize
   async function finalize() {
     if (!activeSession || runningBatch) return
-    if (globalBusy) {
-      setBatchError('Proses scraping lain sedang berjalan.')
-      return
-    }
-    setRunningBatch(true)
-    try {
-      const resp = await finalizeCheckpointSession(activeSession.session_id)
-      if (!resp.success) throw new Error(resp.message)
-      setActive(resp.data)
-      if (tab === 'sessions') loadSessions()
-    } catch (e) {
-      setBatchError(e instanceof Error ? e.message : 'Gagal finalisasi')
-    } finally {
-      setRunningBatch(false)
-    }
-  }
-
-  function handleSessionStarted(session: CheckpointSession) {
-    setActive(session)
-    setBatchError('')
+    setLocalError('')
+    const res = await scrapeStore.run<CheckpointSession>(
+      CHECKPOINT_KEY,
+      'single',
+      `finalize @${activeSession.owner_username || activeSession.shortcode}`,
+      async () => {
+        const resp = await finalizeCheckpointSession(activeSession.session_id)
+        if (!resp.success) throw new Error(resp.message)
+        return resp.data
+      },
+      { keepDataWhileRunning: true },
+    )
+    if (res.busy) setLocalError('Proses scraping lain sedang berjalan.')
+    else if (tab === 'sessions') loadSessions()
   }
 
   const isCheckpointBusy = runningBatch
@@ -699,10 +726,10 @@ export function CheckpointPanel({ currentUrl = '', onSessionActive, globalBusy =
       {/* ── Panel body ── */}
       <div className="p-5">
 
-        {/* Global busy warning */}
-        {globalBusy && (
+        {/* Foreign busy warning — hanya saat proses LAIN yang berjalan */}
+        {foreignBusy && (
           <div className="flex items-center gap-2 text-yellow-300/80 text-xs glass rounded-xl px-3 py-2.5 mb-4 border border-yellow-500/15">
-            <AlertTriangle size={11} /> Scrape utama sedang berjalan — checkpoint ditahan sementara.
+            <AlertTriangle size={11} /> Scraping lain sedang berjalan — checkpoint ditahan sementara.
           </div>
         )}
 
@@ -719,14 +746,17 @@ export function CheckpointPanel({ currentUrl = '', onSessionActive, globalBusy =
             session={activeSession}
             onContinue={continueBatch}
             onFinalize={finalize}
-            onBack={() => setActive(null)}
-            running={isCheckpointBusy || globalBusy}
+            onBack={() => scrapeStore.resetTask(CHECKPOINT_KEY)}
+            running={isCheckpointBusy}
+            busy={foreignBusy}
           />
         ) : tab === 'new' ? (
           <NewSessionForm
             initialUrl={currentUrl}
-            disabled={isCheckpointBusy || globalBusy}
-            onStart={handleSessionStarted}
+            disabled={runningBatch || foreignBusy}
+            starting={runningBatch}
+            error={batchError}
+            onStart={startSession}
           />
         ) : (
           /* ── Sessions list tab ── */

@@ -209,6 +209,7 @@ export interface PostResult {
   reshare_count: number
   direct_send_count: number
   saves_count: number
+  thumbnail_url?: string
   comments: Comment[]
   comments_count: number
   replies_count?: number
@@ -324,6 +325,7 @@ export interface Profile {
   is_private: boolean
   category: string
   profile_pic_url: string
+  recent_posts?: ProfilePost[]
   engagement_summary?: {
     posts_analyzed: number
     avg_likes: number
@@ -728,4 +730,115 @@ export interface DeepHashtagRequest {
 export interface DeepKeywordRequest {
   keyword: string
   max_hashtags?: number
+}
+
+// ════════════════════════════════════════════════════════════════
+// PROFILE DEEP SCRAPE TYPES
+// ════════════════════════════════════════════════════════════════
+
+export interface ScrapeProfileDeepRequest {
+  username: string
+  date_from?: string | null
+  date_to?: string | null
+  max_posts?: number
+  max_comments?: number
+  include_replies?: boolean
+  max_replies_per_comment?: number
+  scrape_likers?: boolean
+  max_likers?: number
+  aggressive_likers?: boolean
+  delay_between_posts?: number
+}
+
+export interface DeepScrapePostEntry {
+  index: number
+  url: string
+  shortcode: string
+  taken_at: number
+  taken_at_iso: string
+  media_type: string
+  feed_like_count: number
+  feed_comment_count: number
+  feed_view_count: number
+  feed_caption: string
+  thumbnail_url?: string
+  scraped: boolean
+  error: string | null
+  data: Record<string, unknown> | null
+}
+
+export interface DeepScrapeComment {
+  number: number
+  username: string
+  text: string
+  comment_id: string
+  like_count: number
+  created_at: number
+  reply_count: number
+  is_reply: boolean
+  parent_comment_id: string
+  category: string
+  sentiment: string
+  language: string
+  is_hate_speech: boolean
+  is_toxic: boolean
+  is_sarcasm: boolean
+  is_wellwish: boolean
+  emojis: string[]
+  hate_words: string[]
+  toxic_words: string[]
+  positive_words: string[]
+  negative_words: string[]
+  ml_confidence: number
+  decision_source: string
+  vader_compound: number
+  replies?: DeepScrapeComment[]
+}
+
+export interface DeepScrapeLiker {
+  user_id: string
+  username: string
+  full_name: string
+  is_verified: boolean
+  is_private: boolean
+  profile_pic_url?: string
+}
+
+export interface DeepScrapePostData {
+  url: string
+  shortcode: string
+  caption: string
+  likes: number
+  owner_username: string
+  media_id: string
+  media_type: string
+  comments: DeepScrapeComment[]
+  comments_count: number
+  replies_count: number
+  likers: DeepScrapeLiker[]
+  likers_fetched: number
+  [key: string]: unknown
+}
+
+export interface DeepScrapeError {
+  phase?: string
+  url?: string
+  error: string
+}
+
+export interface DeepScrapeResult {
+  success: boolean
+  username: string
+  date_from: string | null
+  date_to: string | null
+  scraped_at: string
+  total_posts_found: number
+  total_posts_scraped: number
+  total_comments: number
+  total_replies: number
+  total_likers: number
+  posts: DeepScrapePostEntry[]
+  errors: DeepScrapeError[]
+  saved_file: string
+  elapsed_seconds: number
 }

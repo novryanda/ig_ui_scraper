@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useSyncExternalStore } from 'react'
+import { useState, useMemo, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   CheckCircle,
@@ -18,7 +18,9 @@ import {
 import { scrapeFollowingVerified } from '@/lib/api'
 import type { FollowerItem, FollowingVerifiedResult } from '@/types'
 import { IGLogoFilled } from '@/components/ui/IGLogo'
-import { scrapeStore } from '@/lib/scrapeStore'
+import { scrapeStore, useScrapeTask } from '@/lib/scrapeStore'
+
+const VERIFIED_KEY = 'verified-following:main'
 
 function useScrapeStatus() {
   return useSyncExternalStore(
@@ -33,24 +35,27 @@ export default function VerifiedFollowingPage() {
 
   const [username, setUsername] = useState('')
   const [maxCount, setMaxCount] = useState(500)
-  const [scraping, setScraping] = useState(false)
-  const [result, setResult] = useState<FollowingVerifiedResult | null>(null)
-  const [error, setError] = useState('')
+
+  // Hasil + status persist lintas-navigasi via scrapeStore.
+  const task     = useScrapeTask<FollowingVerifiedResult>(VERIFIED_KEY)
+  const scraping = task.status === 'running'
+  const result   = task.status === 'success' ? task.data : null
+  const [validationError, setValidationError] = useState('')
   const [warning, setWarning] = useState('')
+  const error = validationError || (task.status === 'error' ? (task.error ?? '') : '')
 
   const [search, setSearch] = useState('')
   const [onlyPublic, setOnlyPublic] = useState(false)
 
   const globalBusy = useScrapeStatus()
 
-  useEffect(() => {
-    if (scrapeStore.isBusy()) {
-      const st = scrapeStore.get()
-      setWarning(
-        `Masih ada proses scraping berjalan (${st.kind}: ${st.label}). Tunggu sampai selesai sebelum memulai scrape baru.`,
-      )
-    }
-  }, [])
+  // Peringatan derive reaktif (tanpa setState-in-effect): muncul saat ada
+  // proses LAIN berjalan, dan hilang sendiri saat selesai.
+  const busyInfo    = scrapeStore.get()
+  const foreignBusy = globalBusy && task.status !== 'running'
+  const warningMsg  = warning || (foreignBusy
+    ? `Masih ada proses scraping berjalan (${busyInfo.kind}: ${busyInfo.label}). Tunggu sampai selesai sebelum memulai scrape baru.`
+    : '')
 
   async function handleScrape() {
     if (scrapeStore.isBusy()) {
@@ -60,40 +65,35 @@ export default function VerifiedFollowingPage() {
 
     const u = username.trim().replace('@', '')
     if (!u) {
-      setError('Masukkan username')
+      setValidationError('Masukkan username')
       return
     }
     if (maxCount < 1 || maxCount > 2000) {
-      setError('max_count harus antara 1 – 2000')
+      setValidationError('max_count harus antara 1 – 2000')
       return
     }
 
-    setError('')
+    setValidationError('')
     setWarning('')
-    setResult(null)
 
-    if (!scrapeStore.begin('profile', `verified @${u}`)) {
-      setWarning('Tunggu dulu — proses scraping sebelumnya belum selesai.')
-      return
-    }
+    const res = await scrapeStore.run<FollowingVerifiedResult>(
+      VERIFIED_KEY,
+      'profile',
+      `verified @${u}`,
+      async () => {
+        const resp = await scrapeFollowingVerified(u, maxCount)
+        if (!resp.success) throw new Error(resp.message)
 
-    setScraping(true)
-    try {
-      const resp = await scrapeFollowingVerified(u, maxCount)
-      if (!resp.success) throw new Error(resp.message)
+        const payload = resp.data as
+          | ({ following_verified?: FollowingVerifiedResult } & FollowingVerifiedResult)
+          | undefined
+        const data = payload?.following_verified ?? payload
+        if (!data) throw new Error('Response kosong')
+        return data as FollowingVerifiedResult
+      },
+    )
 
-      const payload = resp.data as
-        | ({ following_verified?: FollowingVerifiedResult } & FollowingVerifiedResult)
-        | undefined
-      const data = payload?.following_verified ?? payload
-      if (!data) throw new Error('Response kosong')
-      setResult(data as FollowingVerifiedResult)
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Gagal scrape verified following')
-    } finally {
-      setScraping(false)
-      scrapeStore.finish()
-    }
+    if (res.busy) setWarning('Tunggu dulu — proses scraping sebelumnya belum selesai.')
   }
 
   // ── FIX: dedup by user_id/username sebelum filter ──────────────────────
@@ -269,9 +269,9 @@ export default function VerifiedFollowingPage() {
           agar tidak kena rate-limit.
         </p>
 
-        {warning && (
+        {warningMsg && (
           <div className="mt-3 flex items-center gap-2 text-yellow-300 text-sm glass rounded-xl px-4 py-2.5">
-            <Clock size={14} /> {warning}
+            <Clock size={14} /> {warningMsg}
           </div>
         )}
         {error && (

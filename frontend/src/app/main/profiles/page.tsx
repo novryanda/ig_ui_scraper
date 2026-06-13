@@ -6,11 +6,14 @@ import {
   Users, Search, Loader2, AlertCircle, CheckCircle,
   Clock, ShieldCheck, ArrowRight, UserCheck, UserX,
   RefreshCw, ChevronDown, ChevronUp, Download, ArrowLeftRight,
+  Play, Image as ImageIcon, Heart, MessageCircle, ExternalLink,
 } from 'lucide-react'
 import { listProfiles, scrapeProfile, scrapeFollowers, scrapeFollowing, computeMutualFollow } from '@/lib/api'
-import type { Profile, FollowerItem, MutualFollowAnalysis } from '@/types'
+import type { Profile, ProfilePost, FollowerItem, MutualFollowAnalysis } from '@/types'
 import { IGLogoFilled } from '@/components/ui/IGLogo'
-import { scrapeStore } from '@/lib/scrapeStore'
+import { scrapeStore, useScrapeTask } from '@/lib/scrapeStore'
+
+const PROFILE_SCRAPE_KEY = 'profiles:scrape'
 
 function useScrapeStatus() {
   return useSyncExternalStore(
@@ -220,51 +223,46 @@ function MutualAnalysisPanel({ analysis }: { analysis: MutualFollowAnalysis }) {
 
 // ── Komponen scrape followers/following + analisis ────────────────────────
 function FollowAnalysisSection({ username }: { username: string }) {
-  const [phase, setPhase]       = useState<'idle' | 'followers' | 'following' | 'done' | 'error'>('idle')
+  const followKey = `profiles:follow:${username}`
   const [maxCount, setMaxCount] = useState(500)
   const [progress, setProgress] = useState('')
-  const [error, setError]       = useState('')
-  const [analysis, setAnalysis] = useState<MutualFollowAnalysis | null>(null)
+
+  // Hasil + status analisis persist lintas-navigasi via scrapeStore.
+  const task      = useScrapeTask<MutualFollowAnalysis>(followKey)
+  const isRunning  = task.status === 'running'
+  const analysis   = task.status === 'success' ? task.data : null
+  const error      = task.status === 'error' ? (task.error ?? '') : ''
 
   const globalBusy = useScrapeStatus()
 
   async function handleAnalyze() {
     if (scrapeStore.isBusy()) return
-    if (!scrapeStore.begin('followers', `@${username}`)) return
 
-    setError('')
-    setAnalysis(null)
+    setProgress(`Mengambil followers @${username}...`)
+    // scrapeStore.run() menjaga proses + hasil tetap hidup walau pindah halaman.
+    await scrapeStore.run<MutualFollowAnalysis>(
+      followKey,
+      'followers',
+      `@${username}`,
+      async () => {
+        // Step 1: Followers
+        setProgress(`Mengambil followers @${username}...`)
+        const followersResp = await scrapeFollowers(username, maxCount)
+        if (!followersResp.success) throw new Error(followersResp.message || 'Gagal ambil followers')
+        const followers = followersResp.data?.items ?? []
 
-    try {
-      // Step 1: Followers
-      setPhase('followers')
-      setProgress(`Mengambil followers @${username}...`)
-      const followersResp = await scrapeFollowers(username, maxCount)
-      if (!followersResp.success) throw new Error(followersResp.message || 'Gagal ambil followers')
+        // Step 2: Following
+        setProgress(`Mengambil following @${username}...`)
+        const followingResp = await scrapeFollowing(username, maxCount)
+        if (!followingResp.success) throw new Error(followingResp.message || 'Gagal ambil following')
+        const following = followingResp.data?.items ?? []
 
-      const followers = followersResp.data?.items ?? []
-
-      // Step 2: Following
-      setPhase('following')
-      setProgress(`Mengambil following @${username}...`)
-      const followingResp = await scrapeFollowing(username, maxCount)
-      if (!followingResp.success) throw new Error(followingResp.message || 'Gagal ambil following')
-
-      const following = followingResp.data?.items ?? []
-
-      // Step 3: Compute
-      const result = computeMutualFollow(username, followers, following)
-      setAnalysis(result)
-      setPhase('done')
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Gagal analisis')
-      setPhase('error')
-    } finally {
-      scrapeStore.finish()
-    }
+        // Step 3: Compute
+        return computeMutualFollow(username, followers, following)
+      },
+    )
+    setProgress('')
   }
-
-  const isRunning = phase === 'followers' || phase === 'following'
 
   return (
     <div className="glass-card p-6 mt-6">
@@ -305,7 +303,7 @@ function FollowAnalysisSection({ username }: { username: string }) {
       {isRunning && (
         <div className="mt-3 flex items-center gap-2 text-white/50 text-sm glass rounded-xl px-4 py-2.5">
           <Loader2 size={14} className="animate-spin text-indigo-400" />
-          {progress}
+          {progress || `Menganalisis followers & following @${username}...`}
         </div>
       )}
 
@@ -320,6 +318,61 @@ function FollowAnalysisSection({ username }: { username: string }) {
   )
 }
 
+// ── Sub-komponen: Recent Posts Grid ──────────────────────────────────────────
+function RecentPostsGrid({ posts, router }: { posts: ProfilePost[]; router: ReturnType<typeof useRouter> }) {
+  const [showAll, setShowAll] = useState(false)
+  const displayed = showAll ? posts : posts.slice(0, 12)
+
+  return (
+    <div className="mt-5 pt-4 border-t border-white/5">
+      <h3 className="font-semibold text-sm uppercase tracking-widest text-white/50 mb-3 flex items-center gap-2">
+        <ImageIcon size={14} className="text-white/40" />
+        Recent Posts ({posts.length})
+      </h3>
+      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+        {displayed.map(post => (
+          <button
+            key={post.shortcode}
+            onClick={() => router.push(`/main/scrapes?url=${encodeURIComponent(post.url)}`)}
+            className="group relative aspect-square rounded-lg overflow-hidden bg-white/5 hover:ring-2 hover:ring-pink-500/40 transition-all"
+            title={`${post.like_count} likes · ${post.comment_count} comments`}
+          >
+            {post.thumbnail_url ? (
+              <img src={post.thumbnail_url} alt="" className="w-full h-full object-cover" loading="lazy"
+                onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <ImageIcon size={16} className="text-white/15" />
+              </div>
+            )}
+            {/* Video overlay */}
+            {(post.is_video || post.media_type === 'VIDEO') && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/30 pointer-events-none">
+                <Play size={16} className="text-white/80" fill="white" />
+              </div>
+            )}
+            {/* Stats overlay on hover */}
+            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1">
+              <div className="flex items-center gap-1 text-[10px] text-white/90">
+                <Heart size={10} className="fill-pink-400 text-pink-400" /> {fmtNum(post.like_count)}
+              </div>
+              <div className="flex items-center gap-1 text-[10px] text-white/90">
+                <MessageCircle size={10} className="text-purple-400" /> {fmtNum(post.comment_count)}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+      {posts.length > 12 && (
+        <button onClick={() => setShowAll(v => !v)}
+          className="btn-glass text-xs mt-3 w-full flex items-center justify-center gap-1.5">
+          {showAll ? <><ChevronUp size={13} /> Sembunyikan</> : <><ChevronDown size={13} /> Tampilkan semua ({posts.length})</>}
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ════════════════════════════════════════════════════════════════════════════
@@ -330,31 +383,34 @@ export default function ProfilesPage() {
   const [profiles,       setProfiles]       = useState<Profile[]>([])
   const [loading,        setLoading]        = useState(true)
   const [scrapeUsername, setScrapeUsername] = useState('')
-  const [scraping,       setScraping]       = useState(false)
-  const [scrapeResult,   setScrapeResult]   = useState<Profile | null>(null)
-  const [error,          setError]          = useState('')
+  const [validationError, setValidationError] = useState('')
   const [warning,        setWarning]        = useState('')
+
+  // Hasil + status scrape profile persist lintas-navigasi via scrapeStore.
+  const scrapeTask   = useScrapeTask<Profile>(PROFILE_SCRAPE_KEY)
+  const scraping     = scrapeTask.status === 'running'
+  const scrapeResult = scrapeTask.status === 'success' ? scrapeTask.data : null
+  const error        = validationError || (scrapeTask.status === 'error' ? (scrapeTask.error ?? '') : '')
 
   /** Username yang sedang ditampilkan panel analisis follow-nya */
   const [analysisTarget, setAnalysisTarget] = useState<string | null>(null)
 
   const globalBusy = useScrapeStatus()
 
+  // Peringatan derive reaktif: muncul saat ada proses LAIN berjalan,
+  // hilang sendiri saat selesai. (Tidak pakai setState-in-effect.)
+  const busyInfo    = scrapeStore.get()
+  const foreignBusy = globalBusy && scrapeTask.status !== 'running'
+  const warningMsg  = warning || (foreignBusy
+    ? `Masih ada proses scraping berjalan (${busyInfo.kind === 'batch' ? 'batch' : busyInfo.kind}: ${busyInfo.label}). ` +
+      `Tunggu sampai selesai sebelum memulai scrape baru.`
+    : '')
+
   useEffect(() => {
     listProfiles()
       .then(r => { if (r.success) setProfiles(r.data.users) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
-
-  useEffect(() => {
-    if (scrapeStore.isBusy()) {
-      const st = scrapeStore.get()
-      setWarning(
-        `Masih ada proses scraping berjalan (${st.kind === 'batch' ? 'batch' : st.kind}: ${st.label}). ` +
-        `Tunggu sampai selesai sebelum memulai scrape baru.`
-      )
-    }
   }, [])
 
   async function handleScrape() {
@@ -364,34 +420,30 @@ export default function ProfilesPage() {
     }
 
     const u = scrapeUsername.trim().replace('@', '').replace('https://www.instagram.com/', '').replace(/\/$/, '')
-    if (!u) { setError('Masukkan username'); return }
+    if (!u) { setValidationError('Masukkan username'); return }
 
-    setError('')
+    setValidationError('')
     setWarning('')
-    setScrapeResult(null)
 
-    if (!scrapeStore.begin('profile', `@${u}`)) {
-      setWarning('Tunggu dulu — proses scraping sebelumnya belum selesai.')
-      return
-    }
+    const res = await scrapeStore.run<Profile>(
+      PROFILE_SCRAPE_KEY,
+      'profile',
+      `@${u}`,
+      async () => {
+        const resp = await scrapeProfile(u)
+        if (!resp.success) throw new Error(resp.message)
 
-    setScraping(true)
-    try {
-      const resp = await scrapeProfile(u)
-      if (!resp.success) throw new Error(resp.message)
+        const prof = (resp.data as Record<string, unknown>)?.profile ?? resp.data
+        if (!prof || !(prof as Profile).username) {
+          throw new Error('Data profile kosong / format tidak dikenali')
+        }
+        // Refresh daftar tracked (side-effect; aman walau komponen sudah unmount).
+        listProfiles().then(r => { if (r.success) setProfiles(r.data.users) }).catch(() => {})
+        return prof as Profile
+      },
+    )
 
-      const prof = (resp.data as Record<string, unknown>)?.profile ?? resp.data
-      if (!prof || !(prof as Profile).username) {
-        throw new Error('Data profile kosong / format tidak dikenali')
-      }
-      setScrapeResult(prof as Profile)
-      listProfiles().then(r => { if (r.success) setProfiles(r.data.users) })
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Gagal scrape profile')
-    } finally {
-      setScraping(false)
-      scrapeStore.finish()
-    }
+    if (res.busy) setWarning('Tunggu dulu — proses scraping sebelumnya belum selesai.')
   }
 
   const disabled = scraping || globalBusy
@@ -457,9 +509,9 @@ export default function ProfilesPage() {
           </button>
         </div>
 
-        {warning && (
+        {warningMsg && (
           <div className="mt-3 flex items-center gap-2 text-yellow-300 text-sm glass rounded-xl px-4 py-2.5">
-            <Clock size={14} /> {warning}
+            <Clock size={14} /> {warningMsg}
           </div>
         )}
         {error && (
@@ -534,6 +586,11 @@ export default function ProfilesPage() {
                 </div>
               </div>
             </div>
+
+            {/* Recent Posts Grid */}
+            {scrapeResult.recent_posts && scrapeResult.recent_posts.length > 0 && (
+              <RecentPostsGrid posts={scrapeResult.recent_posts} router={router} />
+            )}
 
             {/* Panel analisis inline di bawah hasil scrape */}
             {analysisTarget === scrapeResult.username && (

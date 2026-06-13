@@ -469,6 +469,7 @@ class InstagramProfileScraper:
                 "taken_at":   node.get("taken_at_timestamp", 0),
                 "caption":    self._extract_caption(node)[:200],
                 "url":        f"https://www.instagram.com/p/{node.get('shortcode', '')}/",
+                "thumbnail_url": node.get("thumbnail_src") or node.get("display_url") or "",
             })
 
         out = _empty_profile_fields(user.get("username", ""))

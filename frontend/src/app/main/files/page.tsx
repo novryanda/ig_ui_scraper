@@ -16,6 +16,12 @@ import {
   ShieldCheck,
   Lock,
   Download,
+  Clock,
+  MessageSquare,
+  Heart,
+  Layers,
+  Play,
+  Image as ImageIcon,
 } from 'lucide-react'
 import { listOutputFiles, getOutputFile } from '@/lib/api'
 import type { OutputFile, FollowerItem } from '@/types'
@@ -44,6 +50,14 @@ const isProfile = (d: AnyResult) =>
   (d.followers !== undefined ||
     d.posts_count !== undefined ||
     d.method === 'web_profile_api')
+
+const isDeepScrape = (d: AnyResult) =>
+  d &&
+  !isBatch(d) &&
+  !isFollowerList(d) &&
+  typeof d.total_posts_found === 'number' &&
+  Array.isArray(d.posts) &&
+  typeof d.success === 'boolean'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sub-komponen: Top 5 komentar paling banyak like
@@ -366,6 +380,205 @@ function FollowerListPreview({ data }: { data: AnyResult }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sub-komponen: Preview Deep Scrape
+// ─────────────────────────────────────────────────────────────────────────────
+function DeepScrapePreview({ data }: { data: AnyResult }) {
+  const [openPosts, setOpenPosts] = useState<Set<number>>(new Set())
+
+  const togglePost = (idx: number) => {
+    setOpenPosts(prev => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx); else next.add(idx)
+      return next
+    })
+  }
+
+  const posts: AnyResult[] = Array.isArray(data.posts) ? data.posts : []
+  const errors: AnyResult[] = Array.isArray(data.errors) ? data.errors : []
+  const fmt = (n: any) => typeof n === 'number' ? n.toLocaleString('id-ID') : (n ?? '—')
+
+  return (
+    <div className="space-y-4">
+      {/* Summary header */}
+      <div className="glass-card p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <Layers size={18} className="text-purple-400" />
+          <h3 className="text-lg font-bold">@{data.username || '—'}</h3>
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-bold">DEEP SCRAPE</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-[11px] text-white/40 mt-1">
+          {data.scraped_at && (
+            <span className="flex items-center gap-1">
+              <Clock size={10} />
+              {new Date(data.scraped_at).toLocaleString('id-ID')}
+            </span>
+          )}
+          {typeof data.elapsed_seconds === 'number' && (
+            <span>{data.elapsed_seconds}s</span>
+          )}
+          {data.saved_file && (
+            <span className="font-mono truncate max-w-48">{data.saved_file}</span>
+          )}
+        </div>
+
+        {/* Stats grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-4">
+          {[
+            { l: 'Post Ditemukan', v: fmt(data.total_posts_found), color: 'text-blue-400' },
+            { l: 'Post Selesai', v: fmt(data.total_posts_scraped), color: 'text-emerald-400' },
+            { l: 'Komentar', v: fmt(data.total_comments), color: 'text-purple-400' },
+            { l: 'Balasan', v: fmt(data.total_replies), color: 'text-cyan-400' },
+            { l: 'Likers', v: fmt(data.total_likers), color: 'text-pink-400' },
+          ].map(s => (
+            <div key={s.l} className="glass rounded-xl p-3 text-center">
+              <p className={`text-lg font-bold ${s.color}`}>{s.v}</p>
+              <p className="text-[10px] text-white/40 mt-0.5">{s.l}</p>
+            </div>
+          ))}
+        </div>
+
+        {data.success === false && (
+          <div className="mt-3 flex items-center gap-2 text-red-400 text-sm glass rounded-xl px-4 py-2.5">
+            <XCircle size={14} /> Scrape gagal
+          </div>
+        )}
+      </div>
+
+      {/* Errors */}
+      {errors.length > 0 && (
+        <div className="glass-card p-4 border border-red-500/15">
+          <p className="text-xs font-medium text-red-400 mb-2 flex items-center gap-1.5">
+            <XCircle size={12} /> {errors.length} Error
+          </p>
+          <div className="space-y-1 max-h-24 overflow-y-auto">
+            {errors.map((err: AnyResult, i: number) => (
+              <p key={i} className="text-[11px] text-white/40">
+                {err.phase && <span className="text-red-400/60">[{err.phase}] </span>}
+                {err.url && <span className="text-white/60">{err.url} — </span>}
+                {err.error}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Per-post list */}
+      {posts.length > 0 && (
+        <div className="glass-card p-5">
+          <h4 className="text-xs font-medium text-white/50 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <MessageSquare size={12} /> Detail Per Post ({posts.length})
+          </h4>
+          <div className="space-y-2">
+            {posts.map((post: AnyResult, idx: number) => {
+              const isOpen = openPosts.has(idx)
+              const postComments: any[] = Array.isArray(post.data?.comments) ? post.data.comments : []
+              const postLikers: any[] = Array.isArray(post.data?.likers) ? post.data.likers : []
+              const commentsCount = post.data?.comments_count ?? 0
+              const repliesCount = post.data?.replies_count ?? 0
+              const likersFetched = post.data?.likers_fetched ?? 0
+
+              return (
+                <div key={idx} className="glass rounded-xl overflow-hidden">
+                  <button
+                    onClick={() => togglePost(idx)}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/5 transition-colors text-left"
+                  >
+                    <span className="text-xs font-bold text-white/20 w-6 shrink-0">#{post.index ?? idx + 1}</span>
+                    {/* Thumbnail */}
+                    <div className="w-10 h-10 rounded-lg overflow-hidden bg-white/5 shrink-0 relative">
+                      {post.thumbnail_url ? (
+                        <img src={post.thumbnail_url} alt="" className="w-full h-full object-cover" loading="lazy"
+                          onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <ImageIcon size={12} className="text-white/20" />
+                        </div>
+                      )}
+                      {post.media_type === 'VIDEO' && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                          <Play size={10} className="text-white/80" fill="white" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        {post.scraped
+                          ? <CheckCircle size={12} className="text-emerald-400 shrink-0" />
+                          : <XCircle size={12} className="text-red-400 shrink-0" />
+                        }
+                        <span className="text-xs font-medium text-white/80 truncate">
+                          {post.shortcode || post.url}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-[10px] text-white/40 mt-0.5">
+                        <span className="flex items-center gap-0.5"><Heart size={9} className="text-pink-400" />{fmt(post.feed_like_count)}</span>
+                        <span className="flex items-center gap-0.5"><MessageSquare size={9} className="text-purple-400" />{fmt(post.feed_comment_count)}</span>
+                        <span>{post.media_type}</span>
+                        {post.taken_at_iso && <span>{post.taken_at_iso.slice(0, 10)}</span>}
+                      </div>
+                    </div>
+                    {post.scraped && (
+                      <div className="flex items-center gap-2 text-[10px] shrink-0">
+                        <span className="text-emerald-400">{commentsCount} kom</span>
+                        {repliesCount > 0 && <span className="text-blue-400">{repliesCount} bls</span>}
+                        {likersFetched > 0 && <span className="text-pink-400">{likersFetched} likers</span>}
+                      </div>
+                    )}
+                    {isOpen ? <ChevronUp size={12} className="text-white/40" /> : <ChevronDown size={12} className="text-white/40" />}
+                  </button>
+                  {isOpen && (
+                    <div className="px-4 pb-3 pt-1 border-t border-white/5 space-y-3">
+                      {post.feed_caption && (
+                        <p className="text-xs text-white/40 line-clamp-3 border-l-2 border-white/10 pl-3">{post.feed_caption}</p>
+                      )}
+                      {post.url && (
+                        <a href={post.url} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] text-pink-300 hover:text-pink-200">
+                          <ExternalLink size={10} /> Buka Post
+                        </a>
+                      )}
+                      {post.error && <p className="text-xs text-red-400/80">{post.error}</p>}
+
+                      {/* Comments */}
+                      {postComments.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium text-white/50 mb-2 flex items-center gap-1.5">
+                            <MessageSquare size={11} className="text-purple-400" /> Komentar ({postComments.length})
+                          </p>
+                          <CommentList comments={postComments} maxHeight="360px" />
+                        </div>
+                      )}
+
+                      {/* Likers */}
+                      {postLikers.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium text-white/50 mb-2 flex items-center gap-1.5">
+                            <Heart size={11} className="text-pink-400" /> Likers ({postLikers.length})
+                          </p>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-32 overflow-y-auto">
+                            {postLikers.map((l: AnyResult, i: number) => (
+                              <div key={l.user_id || i} className="flex items-center gap-1.5 text-[10px] py-0.5">
+                                <span className="text-white/60 truncate">@{l.username}</span>
+                                {l.is_verified && <ShieldCheck size={9} className="text-blue-400 shrink-0" />}
+                                {l.is_private && <Lock size={8} className="text-white/20 shrink-0" />}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main Page
 // ─────────────────────────────────────────────────────────────────────────────
 export default function FilesPage() {
@@ -447,6 +660,7 @@ export default function FilesPage() {
   // Icon warna per jenis file
   const fileIconColor = (name: string) => {
     if (name.includes('batch')) return 'text-purple-400'
+    if (name.includes('deep')) return 'text-purple-400'
     if (name.includes('following_verified') || name.includes('api_following_verified'))
       return 'text-blue-400'
     if (name.includes('followers')) return 'text-emerald-400'
@@ -616,26 +830,46 @@ export default function FilesPage() {
 
                 return (
                   <div key={idx} className="glass-card p-5 space-y-3">
-                    <div className="flex items-start justify-between">
-                      <div className="min-w-0">
-                        <h3 className="font-semibold">
-                          @{d.owner_username || 'unknown'}
-                        </h3>
-                        <p className="text-xs text-white/40 mt-0.5">
-                          {d.media_type} · {d.product_type || 'feed'} ·{' '}
-                          {d.method || '—'}
-                        </p>
+                    <div className="flex items-start gap-3">
+                      {/* Thumbnail */}
+                      <div className="w-14 h-14 rounded-lg overflow-hidden bg-white/5 shrink-0 relative">
+                        {d.thumbnail_url ? (
+                          <img src={d.thumbnail_url} alt="" className="w-full h-full object-cover" loading="lazy"
+                            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <ImageIcon size={14} className="text-white/20" />
+                          </div>
+                        )}
+                        {d.media_type === 'VIDEO' && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                            <Play size={12} className="text-white/80" fill="white" />
+                          </div>
+                        )}
                       </div>
-                      {d.url && (
-                        <a
-                          href={d.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="btn-glass text-xs flex items-center gap-1.5 shrink-0"
-                        >
-                          <ExternalLink size={12} /> Buka
-                        </a>
-                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h3 className="font-semibold">
+                              @{d.owner_username || 'unknown'}
+                            </h3>
+                            <p className="text-xs text-white/40 mt-0.5">
+                              {d.media_type} · {d.product_type || 'feed'} ·{' '}
+                              {d.method || '—'}
+                            </p>
+                          </div>
+                          {d.url && (
+                            <a
+                              href={d.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn-glass text-xs flex items-center gap-1.5 shrink-0"
+                            >
+                              <ExternalLink size={12} /> Buka
+                            </a>
+                          )}
+                        </div>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-3 gap-3">
@@ -839,36 +1073,91 @@ export default function FilesPage() {
                     )}
                   </div>
                 )}
+
+                {/* Recent Posts Grid */}
+                {Array.isArray(selected.recent_posts) && selected.recent_posts.length > 0 && (
+                  <div className="glass-card p-5">
+                    <h4 className="text-xs font-medium text-white/50 uppercase tracking-widest mb-3 flex items-center gap-2">
+                      <ImageIcon size={12} className="text-white/40" />
+                      Recent Posts ({selected.recent_posts.length})
+                    </h4>
+                    <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                      {selected.recent_posts.slice(0, 12).map((post: any, i: number) => (
+                        <div key={post.shortcode || i} className="relative aspect-square rounded-lg overflow-hidden bg-white/5">
+                          {post.thumbnail_url ? (
+                            <img src={post.thumbnail_url} alt="" className="w-full h-full object-cover" loading="lazy"
+                              onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <ImageIcon size={12} className="text-white/15" />
+                            </div>
+                          )}
+                          {(post.is_video || post.media_type === 'VIDEO') && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/30 pointer-events-none">
+                              <Play size={12} className="text-white/80" fill="white" />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
+
+          {/* ══ PREVIEW: DEEP SCRAPE ══ */}
+          {selected && !previewLoading && isDeepScrape(selected) && (
+            <DeepScrapePreview data={selected} />
+          )}
 
           {/* ══ PREVIEW: POST ══ */}
           {selected &&
             !previewLoading &&
             !isBatch(selected) &&
             !isFollowerList(selected) &&
-            !isProfile(selected) && (
+            !isProfile(selected) &&
+            !isDeepScrape(selected) && (
               <div className="space-y-4">
                 <div className="glass-card p-5">
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <h3 className="font-semibold">
-                        @{displayUsername(selected)}
-                      </h3>
-                      <p className="text-xs text-white/40 mt-0.5 font-mono">
-                        {selected.shortcode || '—'}
-                      </p>
+                  <div className="flex items-start gap-4 mb-3">
+                    {/* Thumbnail */}
+                    <div className="w-16 h-16 rounded-xl overflow-hidden bg-white/5 shrink-0 relative">
+                      {selected.thumbnail_url ? (
+                        <img src={selected.thumbnail_url} alt="" className="w-full h-full object-cover" loading="lazy"
+                          onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <ImageIcon size={16} className="text-white/20" />
+                        </div>
+                      )}
+                      {selected.media_type === 'VIDEO' && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                          <Play size={14} className="text-white/80" fill="white" />
+                        </div>
+                      )}
                     </div>
-                    {selected.url && (
-                      <a
-                        href={selected.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="btn-glass text-xs flex items-center gap-1.5"
-                      >
-                        <ExternalLink size={12} /> Buka
-                      </a>
-                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <h3 className="font-semibold">
+                            @{displayUsername(selected)}
+                          </h3>
+                          <p className="text-xs text-white/40 mt-0.5 font-mono">
+                            {selected.shortcode || '—'}
+                          </p>
+                        </div>
+                        {selected.url && (
+                          <a
+                            href={selected.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn-glass text-xs flex items-center gap-1.5"
+                          >
+                            <ExternalLink size={12} /> Buka
+                          </a>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-3 gap-3 mb-3">

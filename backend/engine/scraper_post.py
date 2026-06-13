@@ -375,6 +375,15 @@ class InstagramScraperV16:
             metrics["media_type"]   = media_type_map.get(item.get("media_type", 0), "UNKNOWN")
             metrics["product_type"] = item.get("product_type", "")
 
+            # Extract thumbnail URL
+            thumb = ""
+            img_cands = (item.get("image_versions2") or {}).get("candidates", []) or []
+            if img_cands:
+                thumb = img_cands[0].get("url", "")
+            if not thumb:
+                thumb = item.get("thumbnail_src") or item.get("display_url") or ""
+            metrics["thumbnail_url"] = thumb
+
             return metrics
 
         except Exception as e:
@@ -443,6 +452,15 @@ class InstagramScraperV16:
             media_type_map = {1: "PHOTO", 2: "VIDEO", 8: "CAROUSEL"}
             metrics["media_type"]   = media_type_map.get(item.get("media_type", 0), "UNKNOWN")
             metrics["product_type"] = item.get("product_type", "")
+
+            # Extract thumbnail URL
+            thumb = ""
+            img_cands = (item.get("image_versions2") or {}).get("candidates", []) or []
+            if img_cands:
+                thumb = img_cands[0].get("url", "")
+            if not thumb:
+                thumb = item.get("thumbnail_src") or item.get("display_url") or ""
+            metrics["thumbnail_url"] = thumb
 
             return metrics
 
@@ -1191,6 +1209,7 @@ class InstagramScraperV16:
             "likers_method":    "",
             "likers":           [],
             "likers_error":     None,
+            "thumbnail_url":    "",
         }
 
         try:
@@ -1256,6 +1275,7 @@ class InstagramScraperV16:
             result["reshare_count"]     = engagement.get("reshare_count", 0)
             result["direct_send_count"] = engagement.get("direct_send_count", 0)
             result["saves_count"]       = engagement.get("saves_count", 0)
+            result["thumbnail_url"]      = engagement.get("thumbnail_url", "")
 
             if engagement.get("likes", 0) > 0:
                 result["likes"] = engagement["likes"]

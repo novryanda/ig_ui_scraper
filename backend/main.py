@@ -21,6 +21,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, field_validator
 from checkpoint_session_api import router as checkpoint_router
 from search_deep_endpoints import deep_search_router
+import job_manager
 
 # ── PATH SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -149,6 +150,51 @@ class ScrapeProfilePostsRequest(BaseModel):
     include_comments: bool = False
     max_comments_per_post: int = 20
     max_replies_per_comment: int = 5
+
+
+class ScrapeProfileDeepRequest(BaseModel):
+    """
+    Endpoint induk: scrape SEMUA post dari profil sekaligus dengan
+    komentar + likers + replies tiap postingan.
+
+    Phase 1 — Kumpulkan URL post (pakai profile_scraper.scrape_profile_posts)
+    Phase 2 — Untuk tiap URL, jalankan unified scraper (komentar+likers+replies)
+    Phase 3 — Gabungkan semua hasil jadi 1 JSON output file
+    """
+    username: str
+
+    # Filter post
+    date_from:  Optional[str] = None   # "YYYY-MM-DD" atau None (semua)
+    date_to:    Optional[str] = None   # "YYYY-MM-DD" atau None (sampai sekarang)
+    max_posts:  int = 50               # 0 = semua post (hati-hati, bisa sangat lama)
+
+    # Config komentar per post
+    max_comments:            int  = 100   # 0 = unlimited
+    include_replies:         bool = True
+    max_replies_per_comment: int  = 20
+
+    # Config likers per post
+    scrape_likers:       bool  = True
+    max_likers:          int   = 500     # 0 = semua likers
+    aggressive_likers:   bool  = False
+
+    # Jeda antar post (detik) — supaya tidak kena rate-limit
+    delay_between_posts: int = 15
+
+    @field_validator("max_comments")
+    @classmethod
+    def validate_max_comments(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_comments tidak boleh negatif. Gunakan 0 untuk unlimited.")
+        return v
+
+    @field_validator("max_posts")
+    @classmethod
+    def validate_max_posts(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_posts tidak boleh negatif. Gunakan 0 untuk semua post.")
+        return v
+
 
 class LoginCookieRequest(BaseModel):
     cookies_json: str
@@ -493,6 +539,213 @@ with InstagramProfileScraper() as scraper:
     print(json.dumps(result, ensure_ascii=False, default=str))
 """
     return _run_subprocess(script, timeout=1800)
+
+
+def run_profile_deep_scraper(
+    username: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    max_posts: int,
+    max_comments: int,
+    include_replies: bool,
+    max_replies_per_comment: int,
+    scrape_likers: bool,
+    max_likers: int,
+    aggressive_likers: bool,
+    delay_between_posts: int,
+    progress_callback=None,
+) -> dict:
+    """
+    Single-subprocess deep scraper:
+    Phase 1: Ambil semua URL post dari profil.
+    Phase 2: Untuk tiap URL, scrape unified (komentar+likers+replies).
+    Phase 3: Gabung semua hasil, simpan ke output.
+
+    Semua berjalan dalam SATU subprocess supaya cookie injector
+    & browser session dipakai bersama (lebih cepat + anti error null).
+    """
+    _max_posts_feed = max_posts if max_posts > 0 else 500
+
+    # Helper: convert Python None → "None" string untuk f-string script
+    _df = 'None' if date_from is None else json.dumps(date_from)
+    _dt = 'None' if date_to is None else json.dumps(date_to)
+    # Username sebagai JSON-quoted string (untuk embedding di code, bukan di f-string)
+    _un_json = json.dumps(username)
+
+    script = f"""
+import sys, os, json, time, random, traceback
+from datetime import datetime
+sys.path.insert(0, r'{ENGINE_DIR}')
+from profile_scraper import InstagramProfileScraper
+from scraper_post import InstagramScraperV16
+
+OUTPUT_DIR = r'{OUTPUT_DIR}'
+_UN = {_un_json}   # username sebagai variabel Python (hindari quote conflict di f-string)
+
+def _save(data, fname):
+    safe = ''.join(c if c.isalnum() or c in '._-' else '_' for c in fname) or 'unknown'
+    fp = os.path.join(OUTPUT_DIR, safe)
+    with open(fp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    return safe
+
+result_summary = {{
+    "success": False,
+    "username": {_un_json},
+    "date_from": {_df},
+    "date_to": {_dt},
+    "scraped_at": datetime.now().isoformat(),
+    "total_posts_found": 0,
+    "total_posts_scraped": 0,
+    "total_comments": 0,
+    "total_replies": 0,
+    "total_likers": 0,
+    "posts": [],
+    "errors": [],
+    "saved_file": "",
+    "elapsed_seconds": 0,
+}}
+
+t_start = time.time()
+
+# ── Phase 1: kumpulkan URL post ──
+print(f"\\n[DeepScraper] Phase 1: Ambil daftar post @{{_UN}}...")
+
+try:
+    with InstagramProfileScraper() as prof:
+        feed_result = prof.scrape_profile_posts(
+            _UN,
+            date_from={_df},
+            date_to={_dt},
+            max_posts={_max_posts_feed},
+            include_comments=False,
+            max_comments_per_post=0,
+            max_replies_per_comment=0,
+        )
+except Exception as e:
+    result_summary["errors"].append({{"phase": "1_feed", "error": str(e)}})
+    result_summary["elapsed_seconds"] = round(time.time() - t_start, 2)
+    print("___RESULT_START___")
+    print(json.dumps(result_summary, ensure_ascii=False, default=str))
+    sys.exit(0)
+
+if not feed_result.get("success"):
+    err = feed_result.get("error", "Gagal ambil daftar post")
+    result_summary["errors"].append({{"phase": "1_feed", "error": err}})
+    result_summary["elapsed_seconds"] = round(time.time() - t_start, 2)
+    print("___RESULT_START___")
+    print(json.dumps(result_summary, ensure_ascii=False, default=str))
+    sys.exit(0)
+
+posts_feed = feed_result.get("posts", [])
+total_found = len(posts_feed)
+result_summary["total_posts_found"] = total_found
+print(f"[DeepScraper] Phase 1 selesai: {{total_found}} post ditemukan")
+
+if total_found == 0:
+    result_summary["success"] = True
+    result_summary["elapsed_seconds"] = round(time.time() - t_start, 2)
+    print("___RESULT_START___")
+    print(json.dumps(result_summary, ensure_ascii=False, default=str))
+    sys.exit(0)
+
+# ── Phase 2: unified scrape tiap post ──
+print(f"[DeepScraper] Phase 2: Unified scrape {{total_found}} post...")
+
+with InstagramScraperV16() as scraper:
+    for idx, post_meta in enumerate(posts_feed, 1):
+        post_url = post_meta.get("url", "")
+        post_shortcode = post_meta.get("shortcode", "")
+
+        if not post_url:
+            result_summary["errors"].append({{
+                "url": post_shortcode, "shortcode": post_shortcode,
+                "error": "URL kosong dari feed",
+            }})
+            continue
+
+        print(f"[DeepScraper] [{{idx}}/{{total_found}}] {{post_url}}")
+
+        post_entry = {{
+            "index": idx, "url": post_url, "shortcode": post_shortcode,
+            "taken_at": post_meta.get("taken_at", 0),
+            "taken_at_iso": post_meta.get("taken_at_iso", ""),
+            "media_type": post_meta.get("media_type", ""),
+            "feed_like_count": post_meta.get("like_count", 0),
+            "feed_comment_count": post_meta.get("comment_count", 0),
+            "feed_view_count": post_meta.get("view_count", 0),
+            "feed_caption": post_meta.get("caption", "")[:200],
+            "thumbnail_url": post_meta.get("thumbnail_url", ""),
+            "scraped": False, "error": None, "data": None,
+        }}
+
+        try:
+            unified_data = scraper.scrape_post_unified(
+                post_url,
+                max_comments={max_comments},
+                include_replies={include_replies},
+                max_replies_per_comment={max_replies_per_comment},
+                scrape_likers={scrape_likers},
+                max_likers={max_likers},
+                aggressive_likers={aggressive_likers},
+                checkpoint_size=200,
+                checkpoint_delay_min=8,
+                checkpoint_delay_max=15,
+                page_delay_min=1.5,
+                page_delay_max=3.0,
+            )
+
+            cc = unified_data.get("comments_count", 0)
+            rc = unified_data.get("replies_count", 0)
+            lf = unified_data.get("likers_fetched", 0)
+
+            result_summary["total_comments"] += cc
+            result_summary["total_replies"] += rc
+            result_summary["total_likers"] += lf
+            result_summary["total_posts_scraped"] += 1
+            post_entry["scraped"] = True
+            post_entry["data"] = unified_data
+
+            print(f"[DeepScraper] [{{idx}}/{{total_found}}] OK komentar={{cc}} replies={{rc}} likers={{lf}}")
+
+        except Exception as e:
+            err_msg = str(e)
+            post_entry["scraped"] = False
+            post_entry["error"] = err_msg
+            result_summary["errors"].append({{"url": post_url, "error": err_msg}})
+            print(f"[DeepScraper] [{{idx}}/{{total_found}}] FAIL {{err_msg[:120]}}")
+
+        result_summary["posts"].append(post_entry)
+
+        if idx < total_found:
+            jeda = {delay_between_posts} + random.randint(3, 8)
+            print(f"[DeepScraper] Jeda {{jeda}}s...")
+            time.sleep(jeda)
+
+# ── Phase 3: simpan gabungan ──
+result_summary["success"] = True
+result_summary["elapsed_seconds"] = round(time.time() - t_start, 2)
+
+ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+def _sanitize(name):
+    return ''.join(c if c.isalnum() or c in '._-' else '_' for c in name) or 'unknown'
+
+fname = f"profile_deep_{{_sanitize(_UN)}}_{{ts}}.json"
+saved = _save(result_summary, fname)
+result_summary["saved_file"] = saved
+
+print(f"\\n[DeepScraper] Selesai! "
+      f"{{result_summary['total_posts_scraped']}}/{{total_found}} post, "
+      f"{{result_summary['total_comments']}} komentar, "
+      f"{{result_summary['total_likers']}} likers | file: {{saved}}")
+
+print("___RESULT_START___")
+print(json.dumps(result_summary, ensure_ascii=False, default=str))
+"""
+
+    # Timeout sangat besar karena bisa scrape banyak post
+    timeout = max(7200, 1800 + max_posts * 600)
+    return _run_subprocess(script, timeout=timeout)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1196,6 +1449,87 @@ def scrape_profile_posts(req: ScrapeProfilePostsRequest):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# ENDPOINTS — PROFILE DEEP SCRAPE
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/scrape/profile/deep")
+def scrape_profile_deep(req: ScrapeProfileDeepRequest):
+    """
+    Endpoint INDUK: scrape semua post dari profil @username secara mendalam.
+
+    Flow:
+      1. Ambil list semua URL post (filter tanggal, max_posts)
+      2. Tiap URL di-scrape dengan unified scraper (komentar + likers + replies)
+      3. Semua hasil digabung jadi 1 JSON file
+
+    Karena bisa sangat lama (banyak post), endpoint ini OTOMATIS berjalan
+    sebagai background job dan langsung balik {job_id}.
+
+    Pantau progress: GET /api/jobs/{job_id}
+    Ambil hasil:     GET /api/jobs/{job_id}/result
+    """
+    username = extract_username(req.username)
+    if not username:
+        raise HTTPException(
+            400,
+            f"Tidak bisa menentukan username dari input: '{req.username}'"
+        )
+
+    params = req.model_dump()
+    params["username"] = username
+
+    job_id = job_manager.create_job(
+        "profile_deep",
+        params,
+        _job_dispatch,
+        label=f"@{username} deep scrape",
+    )
+
+    return success(
+        {
+            "job_id":   job_id,
+            "kind":     "profile_deep",
+            "username": username,
+            "params":   params,
+            "monitor": {
+                "status_url": f"/api/jobs/{job_id}",
+                "result_url": f"/api/jobs/{job_id}/result",
+            },
+        },
+        f"Job deep scrape @{username} dimulai. Pantau: GET /api/jobs/{job_id}",
+    )
+
+
+@app.get("/api/scrape/profile/deep/{job_id}/progress")
+def get_deep_scrape_progress(job_id: str):
+    """
+    Shortcut untuk lihat progress deep scrape job.
+    """
+    st = job_manager.get_job(job_id)
+    if not st:
+        return failure(f"Job '{job_id}' tidak ditemukan", {"status": "not_found"})
+
+    result = job_manager.get_job_result(job_id)
+    progress_data = {}
+    if result and isinstance(result, dict):
+        data = result.get("data", result)
+        progress_data = {
+            "total_posts_found":   data.get("total_posts_found", 0),
+            "total_posts_scraped": data.get("total_posts_scraped", 0),
+            "total_comments":      data.get("total_comments", 0),
+            "total_likers":        data.get("total_likers", 0),
+            "errors_count":        len(data.get("errors", [])),
+        }
+
+    return success({
+        "job_id":   job_id,
+        "status":   st.get("status"),
+        "progress": st.get("progress"),
+        "detail":   progress_data,
+    })
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # ENDPOINTS — OUTPUT FILES
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -1515,6 +1849,151 @@ def download_search_csv_inline(req: DownloadSearchInlineRequest):
         media_type="text/csv; charset=utf-8-sig",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# BACKGROUND JOBS — scraping berat dijalankan sebagai job (tahan refresh)
+# ════════════════════════════════════════════════════════════════════════════
+#
+# Alur:
+#   POST /api/jobs/start  {kind, params}  → {job_id}  (langsung balik, worker jalan di thread)
+#   GET  /api/jobs/{id}                   → status (pending/running/completed/error)
+#   GET  /api/jobs/{id}/result            → ApiResponse hasil (sama persis seperti endpoint sync)
+#   DELETE /api/jobs/{id}                 → hapus job
+#
+# Worker memanggil kembali fungsi endpoint sync yang sudah ada (satu sumber
+# logika: tetap menyimpan output file, _meta, pesan, dll).
+
+class StartJobRequest(BaseModel):
+    kind: str
+    params: dict = {}
+
+
+def _job_dispatch(kind: str, params: dict) -> dict:
+    """Map kind → fungsi endpoint sync. Mengembalikan ApiResponse dict."""
+    try:
+        if kind == "post":
+            return scrape_post(ScrapePostRequest(**params))
+        if kind == "batch":
+            return scrape_posts_batch(ScrapePostsRequest(**params))
+        if kind == "unified":
+            return scrape_post_unified(ScrapeUnifiedRequest(**params))
+        if kind == "likers":
+            return scrape_post_likers(ScrapePostLikersRequest(**params))
+        if kind == "profile":
+            return scrape_profile(ScrapeProfileRequest(**params))
+        if kind == "followers":
+            return scrape_followers(ScrapeFollowersRequest(**params))
+        if kind == "following":
+            return scrape_following(ScrapeFollowingRequest(**params))
+        if kind == "verified":
+            return scrape_following_verified(ScrapeFollowingVerifiedRequest(**params))
+        if kind == "mutual":
+            # Followers + Following sekaligus untuk analisis mutual follow.
+            uname    = extract_username(params.get("username", ""))
+            max_count = int(params.get("max_count", 500))
+            followers = run_followers_scraper(uname, max_count)
+            following = run_following_scraper(uname, max_count)
+            return success(
+                {
+                    "username":  uname,
+                    "followers": followers.get("items", []),
+                    "following": following.get("items", []),
+                },
+                f"Mutual @{uname}: {len(followers.get('items', []))} followers · "
+                f"{len(following.get('items', []))} following",
+            )
+        if kind == "search_hashtag":
+            return search_hashtag_endpoint(SearchHashtagRequest(**params))
+        if kind == "search_keyword":
+            return search_keyword_endpoint(SearchKeywordRequest(**params))
+        if kind == "profile_deep":
+            p = ScrapeProfileDeepRequest(**params)
+            username = extract_username(p.username)
+            if not username:
+                return failure(f"Username tidak valid: '{p.username}'")
+            try:
+                result = run_profile_deep_scraper(
+                    username=username,
+                    date_from=p.date_from,
+                    date_to=p.date_to,
+                    max_posts=p.max_posts,
+                    max_comments=p.max_comments,
+                    include_replies=p.include_replies,
+                    max_replies_per_comment=p.max_replies_per_comment,
+                    scrape_likers=p.scrape_likers,
+                    max_likers=p.max_likers,
+                    aggressive_likers=p.aggressive_likers,
+                    delay_between_posts=p.delay_between_posts,
+                )
+                if not result.get("success"):
+                    return failure(
+                        result.get("errors", [{}])[-1].get("error", "Deep scrape gagal"),
+                        result,
+                    )
+                return success(
+                    result,
+                    f"Deep scrape @{username}: {result['total_posts_scraped']}/{result['total_posts_found']} posts, "
+                    f"{result['total_comments']} comments, {result['total_likers']} likers",
+                )
+            except Exception as e:
+                traceback.print_exc()
+                return failure(str(e))
+        return failure(f"Job kind tidak dikenal: {kind}")
+    except HTTPException as he:
+        return failure(str(he.detail))
+    except Exception as e:
+        traceback.print_exc()
+        return failure(str(e))
+
+
+@app.post("/api/jobs/start")
+def start_job(req: StartJobRequest):
+    label = (
+        req.params.get("url")
+        or req.params.get("username")
+        or req.params.get("hashtag")
+        or req.params.get("keyword")
+        or req.kind
+    )
+    job_id = job_manager.create_job(req.kind, req.params, _job_dispatch, label=str(label))
+    return success({"job_id": job_id, "kind": req.kind}, f"Job {req.kind} dimulai")
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    return success({"jobs": job_manager.list_jobs()})
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job_status(job_id: str):
+    st = job_manager.get_job(job_id)
+    if not st:
+        return failure(f"Job '{job_id}' tidak ditemukan", {"status": "not_found"})
+    return success(st)
+
+
+@app.get("/api/jobs/{job_id}/result")
+def get_job_result(job_id: str):
+    st = job_manager.get_job(job_id)
+    if not st:
+        return failure(f"Job '{job_id}' tidak ditemukan", {"status": "not_found"})
+    if st.get("status") == job_manager.JobStatus.ERROR:
+        return failure(st.get("error") or "Job error", {"status": "error"})
+    if st.get("status") != job_manager.JobStatus.COMPLETED:
+        return failure(f"Job belum selesai (status: {st.get('status')})",
+                       {"status": st.get("status")})
+    result = job_manager.get_job_result(job_id)
+    if result is None:
+        return failure("Hasil job tidak ditemukan", {"status": "missing_result"})
+    # result sudah berbentuk ApiResponse {success, message, data} — kirim apa adanya.
+    return result
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    ok = job_manager.delete_job(job_id)
+    return success({"job_id": job_id, "deleted": ok})
 
 
 # ════════════════════════════════════════════════════════════════════════════
